@@ -1,5 +1,5 @@
 import { describe, expect, it } from "./expect.js";
-import { currentActor, describeThread, threads, touch } from "../backend/threads.js";
+import { callerThread, currentActor, describeThread, threads, touch } from "../backend/threads.js";
 /** The parts of a plugin context the thread links use, recording `mark` calls. */
 function fakeCtx(options = {}) {
   const marks = [];
@@ -148,6 +148,20 @@ describe("thread links", () => {
     await links.runAs(undefined, work(["n4"]));
     await links.runAs(a, async () => {});
     expect(marks).toHaveLength(2);
+  });
+  it("knows the calling Claude thread from the hub's _meta, unless `thread` names one", async () => {
+    const agent = (label, plugin = "claude") => ({ "layr/caller": { kind: "agent", plugin, label } });
+    expect(callerThread(agent("t_k3j9x2m1q8"))).toBe("layr://claude/thread/t_k3j9x2m1q8");
+    expect(callerThread(agent("Claude Code threads"))).toBe(undefined);
+    expect(callerThread(agent("t_1", "other"))).toBe(undefined);
+    expect(callerThread({ "layr/caller": { kind: "backend", plugin: "claude" } })).toBe(undefined);
+    expect(callerThread(undefined)).toBe(undefined);
+    const { ctx, claudeReads } = fakeCtx();
+    const links = threads(ctx);
+    const call = { thread: callerThread(agent("t_abc")) };
+    expect((await links.actor(call, undefined)).thread).toBe("layr://claude/thread/t_abc");
+    expect((await links.actor(call, "layr://pipeline/task/7")).thread).toBe("layr://pipeline/task/7");
+    expect(claudeReads).toEqual(["t_abc"]);
   });
   it("describes a link for the AI", () => {
     const line = describeThread({

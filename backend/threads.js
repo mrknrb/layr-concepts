@@ -85,12 +85,13 @@ export function threads(ctx) {
   }
   /**
    * Who a tool call acts for: the run's caller (an AI chat), else the thread the agent named (a T3 thread's id or
-   * `layr://t3threads/thread/…` link, or a pipeline task's `layr://pipeline/task/…` link). None when neither says.
+   * `layr://t3threads/thread/…` link, or a pipeline task's `layr://pipeline/task/…` link), else the Claude thread
+   * that called (`call.thread`, from the hub's `_meta`: callerThread). None when none says.
    */
   async function actor(call, thread) {
     const named = thread?.trim();
     const link = named && (named.startsWith("layr://") ? named : CLAUDE_THREAD + encodeURIComponent(named));
-    const key = call.caller ?? link;
+    const key = call.caller ?? link ?? call.thread;
     if (!key) return undefined;
     const cached = known.get(key);
     if (cached && Date.now() - cached.at < KEEP_MS) return cached.actor;
@@ -132,6 +133,16 @@ export function threads(ctx) {
     return result;
   }
   return { actor, mark, relink, runAs };
+}
+/**
+ * The Claude thread that called a tool, as its link, from the MCP request's `_meta["layr/caller"]` (docs/ARCHITECTURE.md
+ * › The MCP hub): the claude plugin gives each thread an agent token labelled with the thread's id. Else undefined.
+ */
+export function callerThread(meta) {
+  const caller = meta?.["layr/caller"];
+  if (caller?.kind !== "agent" || caller.plugin !== "claude") return undefined;
+  const id = String(caller.label ?? "").trim();
+  return /^t_[A-Za-z0-9_-]+$/.test(id) ? CLAUDE_THREAD + encodeURIComponent(id) : undefined;
 }
 /** A thread link as a line for the AI: title, what it did, when, and its note. */
 export function describeThread(t) {

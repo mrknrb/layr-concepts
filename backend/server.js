@@ -8,6 +8,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { createSupabase } from "../shared/supabase.js";
 import { COMMAND_TOOLS, createContext } from "./context.js";
 import { errorMessage, Hub, log } from "./hub.js";
+import { callerThread } from "./threads.js";
 import { activate } from "./tools.js";
 
 /** Tools that only read: everything else may have changed the map, so the panels hear `concepts:changed`. */
@@ -70,10 +71,11 @@ export function buildTools({ hub, supabase, onWrite = () => {} }) {
     if (!handler) continue;
     all.set(def.tool, { name: def.tool, description: def.description, inputSchema: def.inputSchema, handler });
   }
-  const call = async (name, args = {}) => {
+  /** `meta`: the request's `_meta`; the Claude thread that called is in it (callerThread). */
+  const call = async (name, args = {}, meta = undefined) => {
     const tool = all.get(name);
     if (!tool) throw new Error(`No tool ${name}`);
-    const result = await tool.handler(args, {});
+    const result = await tool.handler(args, { thread: callerThread(meta) });
     if (!READS.has(name)) onWrite(name);
     return result;
   };
@@ -101,7 +103,8 @@ async function main() {
   }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
-      return { content: toolContent(await call(request.params.name, request.params.arguments ?? {})) };
+      const { name, arguments: args, _meta: meta } = request.params;
+      return { content: toolContent(await call(name, args ?? {}, meta)) };
     } catch (error) {
       return { isError: true, content: [{ type: "text", text: errorMessage(error) }] };
     }

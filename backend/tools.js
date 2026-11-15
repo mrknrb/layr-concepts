@@ -60,9 +60,9 @@ const INSTRUCTIONS = [
   "- To check your work: concepts__edges lists a group's edges, concepts__check looks for what might be wrong in it, " +
     "concepts__follow follows edges of a type step by step, and concepts__history without a node shows the latest " +
     "changes across the map.",
-  "- In a Claude thread, pass `thread` (your thread's id, when you know it; in a layr pipeline task, the task link " +
-    "its first message gives) to every tool that changes the map, so the user can find your thread from the nodes. " +
-    "When your " +
+  "- The nodes you change are linked to your thread, so the user can find it from the nodes: a Claude thread of " +
+    "layr is known by itself; in a layr pipeline task, pass `thread` (the task link its first message gives) to " +
+    "every tool that changes the map (elsewhere, your thread's id when you know it). When your " +
     "thread has something worth finding about a node it doesn't change (you read it, decided or learned something " +
     "about it), link them with concepts__mention and a short note. concepts__threads lists the threads of a node: " +
     "earlier work and discussions about it.",
@@ -275,8 +275,8 @@ const placeArgs = {
 const THREAD_ARG = {
   type: "string",
   description:
-    "Your Claude thread's id, when you know it (in a layr pipeline task, the task link its first message gives), " +
-    "so the user finds your thread from the nodes",
+    "In a layr pipeline task, the task link its first message gives (a Claude thread of layr is known without it; " +
+    "elsewhere, your thread's id when you know it), so the user finds your thread from the nodes",
 };
 /** Registers the tools and commands on `ctx` (backend/context.js: what layr_code's plugin host gave). */
 export function activate(ctx) {
