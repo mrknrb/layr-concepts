@@ -1,0 +1,17 @@
+{
+  "name": "layr-plugin-concepts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "layr's concept map: nodes in groups, edges, tags, summaries, prototypes, proposals, project maps.",
+  "main": "backend/server.js",
+  "scripts": {
+    "start": "node backend/server.js",
+    "test": "node --test test/*.test.js test/shared/*.test.js",
+    "test:live": "node test/live.test.js",
+    "test:panels": "node test/panels.e2e.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2"
+  }
+}

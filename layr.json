@@ -1,0 +1,44 @@
+{
+  "id": "concepts",
+  "name": "Concepts",
+  "version": "0.1.0",
+  "description": "Your concept map: nodes in groups, edges, tags, summaries, prototypes and AI proposals, shared with layr_code.",
+  "author": "mrknrb",
+  "layr": "^0.1",
+  "icon": "hub",
+  "permissions": [
+    "data",
+    "pc",
+    "supabase",
+    "network:https://tirznddjqwrovpvasgpn.supabase.co",
+    "plugins:claude"
+  ],
+  "needs": ["pc", "node"],
+  "panels": [
+    { "id": "map", "title": "Concepts", "page": "panels/concepts.html", "icon": "hub" }
+  ],
+  "commands": [
+    { "id": "open", "title": "Concepts: Open the concept map", "panel": "map" },
+    { "id": "new-view", "title": "Concepts: New view", "panel": "map", "params": { "newView": true } },
+    { "id": "search", "title": "Concepts: Search nodes", "panel": "map", "params": { "search": true } },
+    { "id": "refresh", "title": "Concepts: Refresh", "event": "refresh" }
+  ],
+  "menus": [
+    { "menu": "View", "command": "open", "group": "3" },
+    { "menu": "Concepts", "command": "open", "group": "1" },
+    { "menu": "Concepts", "command": "new-view", "group": "1" },
+    { "menu": "Concepts", "command": "search", "group": "1" },
+    { "menu": "Concepts", "command": "refresh", "group": "2" }
+  ],
+  "keybindings": [{ "key": "ctrl+alt+k", "command": "open" }],
+  "settings": [
+    {
+      "id": "proposals",
+      "type": "boolean",
+      "title": "Proposals for big AI changes",
+      "description": "Deleting, taking out of a group, moving to another group, adding more than 10 nodes and retyping more than 10 edges wait for your Accept in the Concepts panel. Off: AI makes them right away.",
+      "default": true
+    }
+  ],
+  "backend": { "kind": "process", "runtime": "node", "entry": "backend/server.js" }
+}
