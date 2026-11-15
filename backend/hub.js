@@ -69,6 +69,19 @@ export class Hub {
     }
   }
 
+  /** The names of the hub tools this plugin may call (e.g. to see whether the claude plugin offers `ask`). */
+  async toolNames() {
+    const client = await this.connect();
+    const names = [];
+    let cursor;
+    do {
+      const page = await client.listTools(cursor ? { cursor } : {});
+      names.push(...page.tools.map((t) => t.name));
+      cursor = page.nextCursor;
+    } while (cursor);
+    return names;
+  }
+
   /** Fire and forget: an event for the panels. Failures are logged once, not thrown. */
   emit(topic, data) {
     if (!this.available) return;

@@ -518,12 +518,28 @@ async function editSummary(node) {
   const old = graph.summary(node)?.data.text ?? "";
   const text = await modal((done) => {
     const area = h("textarea.layr-textarea", { rows: 6, value: old, placeholder: "A short version of what is inside" });
+    /** Claude (haiku, through the claude plugin) writes it from the node's children; the user can still edit it. */
+    const write = async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      button.textContent = "Writing…";
+      try {
+        const r = await layr.tools.run("summarize", { node });
+        area.value = r?.summary ?? r?.structuredContent?.summary ?? area.value;
+      } catch (error) {
+        layr.ui.notify(`Claude couldn't write it: ${error.message ?? error}`, "error");
+      } finally {
+        button.disabled = false;
+        button.textContent = "Write with Claude";
+      }
+    };
     return [
       h("h3.modal-title", `Summary of "${nodeLabel(graph, node)}"`),
       area,
       h(
         "div.modal-actions",
         old && h("button.layr-button.danger", { onclick: () => done("") }, "Remove"),
+        h("button.layr-button", { onclick: write, title: "Needs the Claude Code plugin on the PC" }, "Write with Claude"),
         h("span.layr-spacer"),
         h("button.layr-button", { onclick: () => done(null) }, "Cancel"),
         h("button.layr-button.primary", { onclick: () => done(area.value.trim()) }, "Save"),

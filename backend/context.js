@@ -97,6 +97,13 @@ export const COMMAND_TOOLS = {
     description: "For the pipeline's Drop: Status Dropped on these nodes, and the reason as a \"Decision: …\" child.",
     inputSchema: object({ nodes: strings("Node ids"), reason: str("Why") }, ["nodes"]),
   },
+  "concepts.summarize": {
+    tool: "summarize",
+    description:
+      "For the Concepts panel: write a node's summary with Claude (haiku, through the claude plugin's ask) from what " +
+      "is inside it, and save it. Gives `{summary}`. Agents write summaries themselves with concepts__summary.",
+    inputSchema: object({ node: str("The node (full id)") }, ["node"]),
+  },
 };
 
 /** The plugin's settings (Concepts settings in the panel), kept in its own store under this key. */
@@ -138,11 +145,16 @@ export function createContext({ supabase, hub }) {
         return handler(args ?? {});
       },
     },
-    /** Core AI isn't a part of the new layr's core (the claude plugin runs Claude); summaries are written by hand. */
+    /** Core AI isn't a part of the new layr's core: one-shot answers come from the claude plugin's `ask` tool. */
     ai: {
-      available: async () => false,
-      run: async () => {
-        throw new Error("Claude is not available to the concepts backend");
+      available: async () => {
+        if (!hub.available) return false;
+        const tools = await hub.toolNames().catch(() => []);
+        return tools.includes("claude__ask");
+      },
+      run: async ({ model, system, prompt }) => {
+        const answer = await hub.call("claude__ask", { prompt, ...(system ? { system } : {}), model: model ?? "haiku" });
+        return { text: typeof answer === "string" ? answer : (answer?.text ?? "") };
       },
     },
     /** No T3 Code in the new layr: links to T3 threads from layr_code still read, without titles. */
