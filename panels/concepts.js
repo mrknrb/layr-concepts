@@ -10,6 +10,8 @@ import { Ops } from "../shared/ops.js";
 import { edgeName, nodeLabel, viewRootLabel } from "../shared/outline.js";
 import { applyBundle, applyRow, TABLES, TAG_COLORS } from "../shared/rows.js";
 import { createSupabase } from "../shared/supabase.js";
+import { editAction, rowAction, shownText, textToSave } from "./keys.js";
+import { nodeMenuItems } from "./nodemenu.js";
 
 const PAGE = 100;
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -91,7 +93,9 @@ const S = {
   types: [],
   adding: null, // {parent, index}: the row where a new node is typed
   adderText: "",
-  editing: null, // node id whose text is edited in its row
+  editing: null, // the row whose text is typed in: a group conn, or "root" for the root's title
+  cursor: null, // the row the keys work on while nothing is typed (a group conn)
+  focus: null, // the row to type in after the next render
   pages: new Map(), // prototype node → html
   pictures: new Map(), // node → {row, url}
   threads: new Map(), // node → thread rows
@@ -514,13 +518,13 @@ async function addTag(node, value) {
   } else if (value) await run(() => ops.tag(node, value));
 }
 
-async function editSummary(node) {
+/** The summary dialog; `write`: Claude starts writing it right away (Summarize with Claude in a node's menu). */
+async function editSummary(node, write = false) {
   const old = graph.summary(node)?.data.text ?? "";
   const text = await modal((done) => {
     const area = h("textarea.layr-textarea", { rows: 6, value: old, placeholder: "A short version of what is inside" });
     /** Claude (haiku, through the claude plugin) writes it from the node's children; the user can still edit it. */
-    const write = async (event) => {
-      const button = event.currentTarget;
+    const writeIt = async () => {
       button.disabled = true;
       button.textContent = "Writing…";
       try {
@@ -533,13 +537,19 @@ async function editSummary(node) {
         button.textContent = "Write with Claude";
       }
     };
+    const button = h(
+      "button.layr-button",
+      { onclick: () => void writeIt(), title: "Needs the Claude Code plugin on the PC" },
+      "Write with Claude",
+    );
+    if (write) setTimeout(() => void writeIt(), 0);
     return [
       h("h3.modal-title", `Summary of "${nodeLabel(graph, node)}"`),
       area,
       h(
         "div.modal-actions",
         old && h("button.layr-button.danger", { onclick: () => done("") }, "Remove"),
-        h("button.layr-button", { onclick: write, title: "Needs the Claude Code plugin on the PC" }, "Write with Claude"),
+        button,
         h("span.layr-spacer"),
         h("button.layr-button", { onclick: () => done(null) }, "Cancel"),
         h("button.layr-button.primary", { onclick: () => done(area.value.trim()) }, "Save"),
@@ -557,7 +567,7 @@ async function setPicture(node, file) {
   const path = `images/${crypto.randomUUID()}.${TYPES[file.type]}`;
   await run(async () => {
     await storage.upload(path, new Uint8Array(await file.arrayBuffer()), file.type);
-    const old = S.pictures.get(node)?.row;
+    const old = await pictureRow(node);
     if (old) {
       await tables.update(TABLES.images, { id: old.id }, { path, width: null, height: null });
       await storage.remove([old.path]).catch(() => {});
@@ -567,12 +577,31 @@ async function setPicture(node, file) {
   await select(node);
 }
 
+/** A node's picture row: the one its details read, else read now (a menu works without the details open). */
+async function pictureRow(node) {
+  if (S.pictures.get(node)?.row) return S.pictures.get(node).row;
+  if (!graph.node(node)?.data.image) return undefined;
+  return (await tables.select(TABLES.images, { node }))[0];
+}
+
+/** Choose a picture file for `node` (from its menu); its details show, with their own button if the browser balks. */
+function choosePicture(node) {
+  void select(node);
+  const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", hidden: true });
+  file.onchange = () => {
+    if (file.files[0]) void setPicture(node, file.files[0]);
+    file.remove();
+  };
+  document.body.append(file);
+  file.click();
+}
+
 async function removePicture(node) {
-  const pic = S.pictures.get(node);
-  if (!pic) return;
+  const row = await pictureRow(node).catch(() => undefined);
+  if (!row) return;
   await run(async () => {
-    await tables.delete(TABLES.images, { id: pic.row.id });
-    await storage.remove([pic.row.path]).catch(() => {});
+    await tables.delete(TABLES.images, { id: row.id });
+    await storage.remove([row.path]).catch(() => {});
     delete graph.node(node).data.image;
   });
   S.pictures.delete(node);
@@ -611,13 +640,28 @@ function render() {
   const side = $("#side");
   if (!typing(side)) side.replaceChildren(...clean(renderSide()));
   const main = $("#main");
-  // A node's text being edited in its row stays; a new node being typed is kept by S.adderText.
-  if (!(S.editing && typing(main))) main.replaceChildren(...clean(renderMain()));
+  // A node's text being typed in its row stays, unless typing goes on in another row (S.focus: Enter, Tab…); a new
+  // node being typed in the adder is kept by S.adderText.
+  const active = document.activeElement;
+  const typingText = main.contains(active) && active.isContentEditable;
+  if (!typingText || S.focus) {
+    rebuilding = typingText;
+    try {
+      main.replaceChildren(...clean(renderMain()));
+    } finally {
+      rebuilding = false;
+    }
+  }
   const details = $("#details");
   details.hidden = !showDetails;
   if (!details.hidden && !typing(details)) details.replaceChildren(...clean(renderDetails(S.selected)));
   const root = S.root && graph.node(S.root);
   void layr.panel.setTitle(root ? `Concepts · ${nodeLabel(graph, S.root)}` : "Concepts").catch(() => {});
+  if (S.focus) {
+    const text = rowText(S.focus);
+    S.focus = null;
+    if (text) return caretAtEnd(text);
+  }
   const focus = $("[data-autofocus]", main);
   if (focus && document.activeElement !== focus) {
     focus.focus();
@@ -825,11 +869,13 @@ function renderHead(root) {
     crumbs.length > 0 && h("div.crumbs", crumbs),
     h(
       "div.root-row",
-      h(
-        "div.root-text",
-        { onclick: () => void select(root), title: "Show its details", dataset: { node: root } },
-        nodeLabel(graph, root),
-      ),
+      {
+        dataset: { node: root },
+        onmousedown: (e) => modifierClick(e) && e.preventDefault(),
+        onclick: (e) => modifierClick(e) && void select(root),
+        oncontextmenu: (e) => rowMenu(e, { node: root, root: true }),
+      },
+      nodeText(root, "root", "root-text", rootKey),
       ...tagPills(root),
       view && view.data.name && h("span.layr-badge", view.data.name),
     ),
@@ -888,7 +934,7 @@ function renderEdgeChips(node, parent) {
 function renderList(parent) {
   const kids = graph.children(parent);
   const list = h("div.list");
-  kids.forEach((g, index) => list.append(renderItem(g, parent, index)));
+  kids.forEach((g) => list.append(renderItem(g, parent)));
   const total = graph.childCount(parent);
   if (kids.length < total) {
     list.append(
@@ -952,7 +998,7 @@ function renderAdder(parent) {
   return h("div.adder-row", input);
 }
 
-function renderItem(g, parent, index) {
+function renderItem(g, parent) {
   const node = g.data.to;
   const n = graph.node(node);
   const count = graph.childCount(node);
@@ -961,45 +1007,28 @@ function renderItem(g, parent, index) {
   const places = graph.parentCount(node);
   const threads = graph.threadCount(node);
   const summary = graph.summary(node);
-  const text = n ? firstLine(n.data.text) || "(empty)" : "…";
-  const editing = S.editing === g.id;
-
-  const textEl = editing
-    ? h("input.layr-input.row-editor", { value: n?.data.text ?? "", dataset: { autofocus: "select" } })
-    : h(
-        "span.node-text",
-        {
-          ondblclick: (e) => {
-            e.stopPropagation();
-            S.editing = g.id;
-            schedule();
-          },
-        },
-        text,
-      );
-  if (editing) {
-    const commit = async (save) => {
-      if (S.editing !== g.id) return;
-      S.editing = null;
-      const value = textEl.value.trim();
-      if (save && value && value !== n.data.text) await run(() => ops.updateNode(node, { text: value }));
-      else schedule();
-    };
-    textEl.onkeydown = (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        void commit(true).then(() => startAdding(parent, index + 1));
-      } else if (e.key === "Escape") void commit(false);
-    };
-    textEl.onblur = () => void commit(true);
-  }
+  const at = { node, group: g.id, open };
 
   const head = h(
     "div.item-head",
     {
-      class: [S.selected === node ? "selected" : "", n?.data.color ? "colored" : ""].join(" "),
+      class: [
+        S.selected === node ? "selected" : "",
+        S.cursor === g.id ? "cursor" : "",
+        n?.data.color ? "colored" : "",
+      ].join(" "),
       dataset: { node, group: g.id, color: n?.data.color ?? "" },
-      onclick: () => void select(node),
+      // Ctrl+click: its details (the editor) instead of typing; a click beside the text: the row the keys work on.
+      onmousedown: (e) => modifierClick(e) && e.preventDefault(),
+      onclick: (e) => {
+        if (e.target.closest("button")) return;
+        if (modifierClick(e)) return void select(node);
+        if (e.target.closest(".node-text")) return;
+        S.cursor = g.id;
+        if (document.activeElement?.isContentEditable) document.activeElement.blur();
+        schedule();
+      },
+      oncontextmenu: (e) => rowMenu(e, at),
     },
     h(
       "button.toggle",
@@ -1014,7 +1043,7 @@ function renderItem(g, parent, index) {
       },
       open ? "▾" : "▸",
     ),
-    textEl,
+    nodeText(node, g.id, "node-text", (e, typed) => rowKey(e, typed, g, parent)),
     count > 0 && !open && h("span.inside", String(count)),
     n?.data.prototype && h("span.badge-icon", { title: "A prototype: its page shows in the details" }, icon("proto", 13)),
     n?.data.image && h("span.badge-icon", { title: n.data.caption || "Has a picture" }, icon("picture", 13)),
@@ -1024,8 +1053,17 @@ function renderItem(g, parent, index) {
     h(
       "span.row-tools",
       h("button.icon-button", { title: "Add a node inside", onclick: (e) => (e.stopPropagation(), void addInside(node)) }, "+"),
+      h(
+        "button.icon-button",
+        {
+          title: "More (right-click the row)",
+          onclick: (e) => (e.stopPropagation(), void nodeMenu(at, below(e.currentTarget))),
+        },
+        "⋯",
+      ),
     ),
   );
+  longPress(head, at);
   return h(
     "div.item",
     head,
@@ -1040,6 +1078,333 @@ async function addInside(node) {
   if (S.viewId && !isOpen(node) && graph.childCount(node)) await toggle(node);
   else await expand(node);
   startAdding(node, graph.children(node).length);
+}
+
+// ---------------------------------------------------------------- typing in a row (as in layr_code's view.tsx)
+
+/** Nodes this panel just made empty for typing (Enter, Ctrl+Enter): one still empty when typing leaves it goes away. */
+const fresh = new Set();
+/** While render() rebuilds the outline: a text losing the focus to that isn't left by the user. */
+let rebuilding = false;
+
+/** The text of the row `key` (a group conn, or "root"). */
+const rowText = (key) => $(key === "root" ? "#main .root-text" : `#main .item-head[data-group="${key}"] .node-text`);
+/** What is typed in a node's text: its lines, without the empty last line the browser keeps after a line break. */
+const textOf = (el) => el.innerText.replace(/\n$/, "");
+/** Ctrl (⌘) + click: a node's details instead of typing in it. */
+const modifierClick = (e) => (e.ctrlKey || e.metaKey) && e.button === 0;
+
+function caretAtEnd(el) {
+  el.focus({ preventScroll: true });
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  getSelection().removeAllRanges();
+  getSelection().addRange(range);
+  el.scrollIntoView({ block: "nearest" });
+}
+
+/** Type in the row `key` after the next render (it may only be there then), the caret at the end. */
+function focusRow(key) {
+  S.focus = key;
+  schedule();
+}
+
+/** A new empty child of `parent` at `index` (none: last), typed in right away. */
+async function addFresh(parent, index) {
+  const made = await run(() => ops.addNewChild(parent, "", index));
+  if (!made) return;
+  fresh.add(made.node);
+  S.adding = null;
+  focusRow(made.group);
+}
+
+/** A new empty child of `node`, last; the row `group` it shows through opens to show it (Ctrl+Enter). */
+async function addChildFresh(node, group) {
+  if (group && !S.viewId) return addInside(node); // no view keeps it open: the adder below it
+  if (group && !isOpen(node)) await run(() => ops.setLook(S.viewId, node, { open: true }));
+  await expand(node).catch((e) => layr.ui.notify(e.message, "error"));
+  await addFresh(node);
+}
+
+/**
+ * A node's text in its row (or the root's title), typed in place: a click puts the caret there, and what is typed is
+ * saved shortly after typing stops, and when typing leaves it. All of its lines show; links show as their label until
+ * it is typed in. `onKey(e, typed)` gets its keys, `typed` = {el, flush, text}.
+ */
+function nodeText(node, key, cls, onKey) {
+  const stored = () => graph.node(node)?.data.text ?? "";
+  const el = h(`div.${cls}`, { contentEditable: "plaintext-only", dataset: { node } });
+  el.spellcheck = false;
+  el.textContent = shownText(stored());
+  let timer;
+  let pending;
+  const flush = () => {
+    clearTimeout(timer);
+    if (pending === undefined) return;
+    const text = textToSave(pending, stored());
+    pending = undefined;
+    if (text !== null && graph.node(node)) void run(() => ops.updateNode(node, { text }));
+  };
+  // A right-click on a text that isn't typed in opens the node's menu without putting the caret in it first.
+  el.addEventListener("mousedown", (e) => e.button === 2 && document.activeElement !== el && e.preventDefault());
+  el.addEventListener("focus", () => {
+    S.editing = key;
+    if (key !== "root") S.cursor = key;
+    if (S.adding && !S.adderText.trim()) S.adding = null;
+    const raw = stored();
+    if (el.textContent !== raw) {
+      // Links typed as Markdown: the text as it is stored, the caret at its end (as layr_code did).
+      el.textContent = raw;
+      setTimeout(() => document.activeElement === el && caretAtEnd(el), 0);
+    }
+  });
+  el.addEventListener("input", () => {
+    pending = textOf(el);
+    clearTimeout(timer);
+    timer = setTimeout(flush, 400);
+  });
+  el.addEventListener("keydown", (e) => void onKey(e, { el, flush, text: textOf(el).trim() }));
+  el.addEventListener("paste", (e) => {
+    const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
+    if (!file) return;
+    e.preventDefault();
+    fresh.delete(node);
+    void setPicture(node, file);
+  });
+  el.addEventListener("blur", (e) => {
+    flush();
+    if (S.editing === key) S.editing = null;
+    // Rebuilt (Enter, Tab…: typing goes on elsewhere), or another window took the focus (it comes back here).
+    if (rebuilding || !el.isConnected || !document.hasFocus()) return;
+    const empty = !textOf(el).trim();
+    if (fresh.has(node)) {
+      // A button on its own row (+, ⋯): it is still being worked on.
+      if (e.relatedTarget && el.closest(".item-head, .root-row")?.contains(e.relatedTarget)) return;
+      fresh.delete(node);
+      const bare = !graph.childCount(node) && !graph.node(node)?.data.image && graph.parentCount(node) <= 1;
+      if (empty && bare) {
+        // Gone from the outline now: typing in another row keeps the outline from being drawn again.
+        if (key !== "root") el.closest(".item")?.remove();
+        return void run(() => ops.deleteNode(node));
+      }
+    }
+    // Emptied: it keeps its text (Backspace in an empty node deletes it).
+    el.textContent = shownText(stored());
+    schedule();
+  });
+  return el;
+}
+
+/** Keys while a child's text is typed in its row `g` (a group conn of `parent`). */
+async function rowKey(e, { el, flush, text }, g, parent) {
+  const node = g.data.to;
+  const deletable =
+    !graph.childCount(node) &&
+    graph.parentCount(node) <= 1 &&
+    !graph.node(node)?.data.image &&
+    !graph.summary(node) &&
+    !graph.edgesOf(node).length;
+  const action = editAction(e, { empty: !text, deletable });
+  if (!action) return;
+  e.preventDefault();
+  flush();
+  if (text) fresh.delete(node);
+  const siblings = graph.children(parent);
+  const index = siblings.findIndex((c) => c.id === g.id);
+  if (action === "stop") {
+    // Stop typing; the row stays the one the keys work on.
+    S.cursor = g.id;
+    el.blur();
+  } else if (action === "sibling") {
+    // Enter in a new node still empty: done adding (it goes away), else a new node below.
+    if (!text && fresh.has(node)) el.blur();
+    else await addFresh(parent, index + 1);
+  } else if (action === "child") {
+    await addChildFresh(node, g.id);
+  } else if (action === "indent") {
+    // Into the node above, as its last child.
+    const above = siblings[index - 1]?.data.to;
+    if (!above) return;
+    if (S.viewId && !isOpen(above)) await run(() => ops.setLook(S.viewId, above, { open: true }));
+    await expand(above).catch(() => {});
+    const moved = await run(() => ops.moveToGroup(g.id, above));
+    if (moved) focusRow(moved);
+  } else if (action === "outdent") {
+    // Out of its group, right after it in the group above.
+    const parentConn = el.closest(".item-children")?.closest(".item")?.querySelector(".item-head")?.dataset.group;
+    const grand = parentConn && graph.group(parentConn)?.data.from;
+    if (!grand) return;
+    const at = graph.children(grand).findIndex((c) => c.id === parentConn) + 1;
+    const moved = await run(() => ops.moveToGroup(g.id, grand, at));
+    if (moved) focusRow(moved);
+  } else if (action === "delete") {
+    fresh.delete(node);
+    el.blur();
+    await run(() => ops.deleteNode(node));
+    if (siblings[index - 1]) focusRow(siblings[index - 1].id);
+  } else if (action === "up" || action === "down") {
+    await moveBy(g.id, action === "up" ? -1 : 1);
+    focusRow(g.id);
+  }
+}
+
+/** Keys while the root's title is typed: Enter adds a first child, Ctrl+Enter a last one; Esc stops. */
+async function rootKey(e, { el, flush }) {
+  const action = editAction(e);
+  if (action !== "stop" && action !== "sibling" && action !== "child") return;
+  e.preventDefault();
+  flush();
+  if (action === "stop") el.blur();
+  else await addFresh(S.root, action === "sibling" ? 0 : undefined);
+}
+
+/** Keys on the outline while nothing is typed: walking the rows (the cursor), and what a row's menu does. */
+function onViewKey(e) {
+  if (e.defaultPrevented || !$("#modal").hidden || S.mode !== "ready") return;
+  const t = e.target;
+  if (t.isContentEditable || t.closest?.("input, textarea, select, .side, .details")) return;
+  const action = rowAction(e);
+  if (!action || (t.closest?.("button") && ["edit", "toggle", "child"].includes(action))) return;
+  if (action === "clear") {
+    if (!S.cursor) return;
+    S.cursor = null;
+    schedule();
+    return e.preventDefault();
+  }
+  const rows = [...document.querySelectorAll("#main .item-head[data-group]")];
+  const keys = rows.map((r) => r.dataset.group);
+  const c = keys.includes(S.cursor) ? S.cursor : null;
+  const go = (key) => {
+    if (!key) return;
+    S.cursor = key;
+    schedule();
+    rows[keys.indexOf(key)]?.scrollIntoView({ block: "nearest" });
+  };
+  if (action === "prev" || action === "next") {
+    e.preventDefault();
+    if (!c) return go(keys[action === "next" ? 0 : keys.length - 1]);
+    return go(keys[keys.indexOf(c) + (action === "next" ? 1 : -1)]);
+  }
+  const g = c && graph.group(c);
+  if (!g) return;
+  e.preventDefault();
+  const head = rows[keys.indexOf(c)];
+  const node = g.data.to;
+  const count = graph.childCount(node);
+  const open = count > 0 && isOpen(node);
+  if (action === "right") {
+    if (count && !open) void toggle(node);
+    else if (open) go(head.parentElement.querySelector(".item-children .item-head[data-group]")?.dataset.group);
+  } else if (action === "left") {
+    if (open) void toggle(node);
+    else go(head.parentElement.parentElement.closest(".item")?.querySelector(".item-head")?.dataset.group);
+  } else if (action === "up" || action === "down") void moveBy(c, action === "up" ? -1 : 1);
+  else if (action === "child") void addChildFresh(node, c);
+  else if (action === "edit") focusRow(c);
+  else if (action === "toggle") count && void toggle(node);
+  else if (action === "remove") void removeFromGroup(c);
+  else if (action === "menu") void nodeMenu({ node, group: c, open }, below(head.querySelector(".node-text") ?? head));
+}
+document.addEventListener("keydown", onViewKey);
+
+// ---------------------------------------------------------------- a node's menu
+
+/** Where a menu opens for an element (a ⋯ button, a row from the keys): below it, at its left edge. */
+const below = (el) => {
+  const r = el.getBoundingClientRect();
+  return { x: r.left, y: r.bottom + 2 };
+};
+
+/** What the items of a node's menu (panels/nodemenu.js) do. */
+const menuActions = {
+  edit: (node) => void select(node),
+  addInside: (node, group) => void (group ? addChildFresh(node, group) : addFresh(node)),
+  addBelow: (group) => {
+    const g = graph.group(group);
+    if (g) void addFresh(g.data.from, graph.children(g.data.from).findIndex((c) => c.id === group) + 1);
+  },
+  toggle: (node) => void toggle(node),
+  focusRoot: (node) => void focusRoot(node),
+  summary: (node) => void editSummary(node),
+  summarize: (node) => void editSummary(node, true),
+  setTag: (node, tag, on) => void run(() => (on ? ops.tag(node, tag) : ops.untag(node, tag))),
+  newTag: (node) => void addTag(node, "new"),
+  setColor: (node, color) => void run(() => ops.updateNode(node, { color })),
+  setUnordered: (node, unordered) => void run(() => ops.updateNode(node, { unordered })),
+  connect: (node) => void addEdge(node),
+  move: (group, delta) => void moveBy(group, delta),
+  moveTo: (group) => void moveTo(group),
+  alsoIn: (node) => void alsoIn(node),
+  picture: (node) => choosePicture(node),
+  removePicture: (node) => void removePicture(node),
+  takeOut: (group) => void removeFromGroup(group),
+  delete: (node) => void deleteNode(node),
+};
+
+/**
+ * A node's menu at `where` (a mouse event, or {x, y} in the page), drawn by the shell (layr.ui.contextMenu, which runs
+ * the picked item). Without the shell's menu (a plain browser) Edit's own action: the node's details.
+ */
+async function nodeMenu(at, where) {
+  const items = nodeMenuItems(graph, at, menuActions);
+  if (!items.length) return;
+  if (typeof layr.ui.contextMenu === "function") {
+    try {
+      await layr.ui.contextMenu(items, where);
+      return;
+    } catch (error) {
+      if (error?.code !== layr.errors.NOT_AVAILABLE) {
+        return void layr.ui.notify(error.message ?? String(error), "error");
+      }
+    }
+  }
+  void select(at.node);
+}
+
+/**
+ * Right-click on a row: its menu. While its text is typed in, the browser's own menu (copy, paste); a long-press on a
+ * phone that already opened the menu only keeps the browser's away.
+ */
+function rowMenu(e, at) {
+  const t = e.target;
+  if (t.isContentEditable && document.activeElement === t) return;
+  e.preventDefault();
+  if (Date.now() - longPressed < 1000) return;
+  void nodeMenu(at, e);
+}
+
+/** When a long-press last opened a menu (its click and the phone's own contextmenu event that follow are skipped). */
+let longPressed = 0;
+/** A finger held on a row for half a second: its menu, at the finger. */
+function longPress(head, at) {
+  let timer;
+  let start;
+  const cancel = () => clearTimeout(timer);
+  head.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "touch") return;
+    if (e.target.isContentEditable && document.activeElement === e.target) return; // selecting text
+    if (e.target.closest("button")) return;
+    start = { x: e.clientX, y: e.clientY };
+    cancel();
+    timer = setTimeout(() => {
+      longPressed = Date.now();
+      void nodeMenu(at, start);
+    }, 500);
+  });
+  head.addEventListener("pointermove", (e) => {
+    if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 8) cancel();
+  });
+  for (const type of ["pointerup", "pointercancel", "pointerleave"]) head.addEventListener(type, cancel);
+  head.addEventListener(
+    "click",
+    (e) => {
+      if (Date.now() - longPressed > 1000) return;
+      e.preventDefault();
+      e.stopPropagation();
+    },
+    true,
+  );
 }
 
 // ---------------------------------------------------------------- details

@@ -239,13 +239,17 @@ body {
   gap: 8px;
 }
 .root-text {
+  flex: 1 1 12em;
+  min-width: 4em;
+  min-height: 28px;
+  padding: 0 4px;
+  border-radius: 4px;
   font-size: 20px;
   font-weight: 600;
-  cursor: pointer;
+  cursor: text;
+  outline: none;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-.root-text:hover {
-  color: var(--accent);
 }
 .view-head .summary {
   margin: 4px 0 2px;
@@ -308,18 +312,37 @@ body {
 .toggle.invisible {
   visibility: hidden;
 }
+/* A node's text is typed in place (a click puts the caret there), so it takes the row's width, as in layr_code. */
 .node-text {
-  flex: 0 1 auto;
+  flex: 1 1 8em;
   min-width: 2em;
+  min-height: 20px;
+  padding: 0 3px;
+  border-radius: 3px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 20px;
+  cursor: text;
+  outline: none;
 }
-.row-editor {
-  flex: 1 1 12em;
-  min-width: 6em;
-  padding: 0 6px;
-  height: 22px;
+.node-text:focus,
+.root-text:focus {
+  background: var(--bg-3);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.node-text:empty:not(:focus)::before,
+.root-text:empty:not(:focus)::before {
+  content: "(empty)";
+  color: var(--fg-dim);
+}
+/* The row the keys work on while nothing is typed (Esc after typing, a click beside the text, ↑ ↓). */
+.item-head.cursor:not(:focus-within) {
+  outline: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
+}
+/* A long-press opens the node's menu on a phone, not the browser's own. */
+.item-head,
+.root-row {
+  -webkit-touch-callout: none;
 }
 .inside {
   color: var(--fg-dim);
@@ -353,6 +376,8 @@ body {
   opacity: 0;
 }
 .item-head:hover .row-tools,
+.item-head:focus-within .row-tools,
+.item-head.cursor .row-tools,
 .item-head.selected .row-tools {
   opacity: 1;
 }

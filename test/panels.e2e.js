@@ -252,18 +252,190 @@ try {
     assert.equal(looks[0]?.open, true);
   });
 
-  await step("picking a node shows its details; its text is edited there", async () => {
+  /** A node's text as stored (the test's own client). */
+  const storedText = async (title) => {
+    const hit = (await tool("search", { query: title, under: root }))[0];
+    const id = (await tables.rpc("find", { prefix: hit.id }))[0];
+    return (await tables.select("nodes", { id }))[0]?.text;
+  };
+  const until = async (test, what) => {
+    for (let i = 0; i < 40; i++) {
+      if (await test()) return;
+      await sleep(250);
+    }
+    throw new Error(`timed out: ${what}`);
+  };
+  /** The text being typed in (a node's row), or null. */
+  const typingIn = () =>
+    page.evaluate(() => (document.activeElement?.isContentEditable ? document.activeElement.innerText : null));
+
+  await step("clicking a node's text types in it, in place; Esc saves and stops", async () => {
     await page.click(".item-head:has-text('Country loaf') .node-text");
+    assert.equal(await typingIn(), "Country loaf");
+    assert.ok(!(await page.isVisible(".details")), "a click doesn't open the details");
+    await page.keyboard.press("End");
+    await page.keyboard.type(" (75% water)");
+    await page.keyboard.press("Escape");
+    assert.equal(await typingIn(), null);
+    await page.waitForSelector(".item-head.cursor:has-text('Country loaf (75% water)')");
+    // Saved as the user (the panel writes itself): the backend reads it back.
+    await until(async () => /75% water/.test(await tool("read", { node: root, budget: 4000 })), "the backend reads it");
+  });
+
+  /** The shell's context menu, faked: records each call and picks the item at `path` (labels), as the shell does. */
+  const fakeMenu = (path) =>
+    page.evaluate((path) => {
+      window.menuCalls = [];
+      layr.ui.contextMenu = async (items, at) => {
+        window.menuCalls.push({
+          labels: items.map((i) => (i === "-" ? "-" : i.label)),
+          first: { label: items[0].label, icon: items[0].icon },
+          prevented: at instanceof Event ? at.defaultPrevented : null,
+          at: at instanceof Event ? { x: at.clientX, y: at.clientY } : at,
+        });
+        let list = items;
+        let item = null;
+        for (const label of path ?? []) {
+          item = list.find((i) => i !== "-" && i.label === label);
+          list = item?.items ?? [];
+        }
+        if (!item) return null;
+        item.run?.();
+        return item;
+      };
+    }, path);
+  const menuCalls = () => page.evaluate(() => window.menuCalls);
+
+  await step("right-click opens the node's menu; Edit opens the details", async () => {
+    await fakeMenu(["Edit"]);
+    await page.click(".item-head:has-text('Country loaf') .node-text", { button: "right" });
     await page.waitForSelector(".details .d-text");
-    assert.equal(await page.inputValue(".details .d-text"), "Country loaf");
+    const [call] = await menuCalls();
+    assert.equal(call.labels[0], "Edit");
+    assert.equal(call.first.icon, "edit");
+    assert.equal(call.prevented, true, "no browser menu on a node");
+    for (const label of ["Add below", "Write a summary…", "Tags", "Connect to…", "Delete everywhere…"]) {
+      assert.ok(call.labels.includes(label), `the menu has ${label}`);
+    }
+    assert.equal(await typingIn(), null, "a right-click doesn't start typing");
+    assert.equal(await page.inputValue(".details .d-text"), "Country loaf (75% water)");
     assert.ok(await page.isVisible(".details .d-edges:has-text('Sourdough starter')"));
     await page.screenshot({ path: join(SHOTS, "details-dark.png") });
-    await page.fill(".details .d-text", "Country loaf (75% water)");
+    await page.fill(".details .d-text", "Country loaf (78% water)");
     await page.press(".details .d-text", "Enter");
-    await page.waitForSelector(".item-head:has-text('Country loaf (75% water)')");
-    // Saved as the user (the panel writes itself): the backend reads it back.
-    for (let i = 0; i < 20 && !/75% water/.test(await tool("read", { node: root, budget: 4000 })); i++) await sleep(250);
-    assert.match(await tool("read", { node: root, budget: 4000 }), /Country loaf \(75% water\)/);
+    await page.waitForSelector(".item-head:has-text('Country loaf (78% water)')");
+    const saved = async () => (await storedText("Country loaf")) === "Country loaf (78% water)";
+    await until(saved, "saved from the details");
+  });
+
+  await step("a menu's submenu item runs: a tag from Tags › its set", async () => {
+    await fakeMenu(["Tags", "lf-e2e Status", "lf-e2e Wish"]);
+    await page.click(".item-head:has-text('Oven temperatures') .node-text", { button: "right" });
+    await page.waitForSelector(".item-head:has-text('Oven temperatures') .tag-pill:has-text('lf-e2e Wish')");
+    await fakeMenu(["Tags", "lf-e2e Status", "lf-e2e Wish"]);
+    await page.click(".item-head:has-text('Oven temperatures') .node-text", { button: "right" });
+    await page.waitForSelector(".item-head:has-text('Oven temperatures') .tag-pill", { state: "detached" });
+  });
+
+  await step("right-click while typing: the browser's menu; without the shell's menu: Edit's action", async () => {
+    await fakeMenu(null);
+    await page.click(".item-head:has-text('Flour types') .node-text");
+    await page.evaluate(() => {
+      window.lastContext = null;
+      document.addEventListener("contextmenu", (e) => (window.lastContext = e.defaultPrevented), { once: true });
+    });
+    await page.click(".item-head:has-text('Flour types') .node-text", { button: "right" });
+    assert.equal(await page.evaluate(() => window.lastContext), false);
+    assert.equal((await menuCalls()).length, 0);
+    await page.keyboard.press("Escape");
+    // A plain browser, or a shell without the menu: NOT_AVAILABLE, and the node's details open instead.
+    await page.evaluate(() => {
+      layr.ui.contextMenu = () =>
+        Promise.reject(Object.assign(new Error("no shell"), { code: layr.errors.NOT_AVAILABLE }));
+    });
+    await page.click(".item-head:has-text('Flour types') .node-text", { button: "right" });
+    await page.waitForFunction(() => document.querySelector(".details .d-text")?.value === "Flour types");
+  });
+
+  await step("Enter adds a node below, Tab and Shift+Tab move it in and out, Enter in an empty one stops", async () => {
+    await page.click(".details button[title='Close']");
+    await page.click(".item-head:has-text('Sourdough starter') .node-text");
+    await page.keyboard.press("End");
+    await page.keyboard.press("Enter");
+    await until(async () => (await typingIn()) === "", "a new empty row to type in");
+    await page.keyboard.type("Levain build");
+    await page.keyboard.press("Enter");
+    await until(async () => (await typingIn()) === "", "another new row");
+    await page.keyboard.type("Feeding");
+    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type("twice a day");
+    await page.keyboard.press("Tab");
+    const inside =
+      ".item:has(> .item-head:has-text('Levain build')) > .item-children .item-head:has-text('twice a day')";
+    await page.waitForSelector(inside);
+    await until(async () => /^Feeding\ntwice a day/.test(await typingIn()), "typing goes on in the moved row");
+    await page.keyboard.press("Shift+Tab");
+    await page.waitForSelector(inside, { state: "detached" });
+    await page.waitForSelector(".view-body > .list > .item > .item-head:has-text('twice a day')");
+    await until(async () => /^Feeding/.test(await typingIn()), "typing goes on after Shift+Tab");
+    await page.keyboard.press("Enter");
+    await until(async () => (await typingIn()) === "", "a new row after it");
+    const rows = await page.locator(".item-head").count();
+    await page.keyboard.press("Enter");
+    await until(async () => (await page.locator(".item-head").count()) === rows - 1, "the empty new row goes away");
+    assert.equal(await typingIn(), null);
+    const read = await tool("read", { node: root, budget: 6000 });
+    assert.match(read, /Sourdough starter[\s\S]*Levain build[\s\S]*Feeding/);
+    await until(async () => (await storedText("twice a day")) === "Feeding\ntwice a day", "two lines saved");
+    await page.screenshot({ path: join(SHOTS, "typing-dark.png") });
+  });
+
+  await step("keys on a row while nothing is typed: arrows walk, Enter types, Shift+F10 opens its menu", async () => {
+    await page.click(".item-head:has-text('Levain build') .node-text");
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".item-head.cursor:has-text('Levain build')");
+    await page.keyboard.press("ArrowUp");
+    await page.waitForSelector(".item-head.cursor:has-text('Sourdough starter')");
+    await page.keyboard.press("Enter");
+    await until(async () => (await typingIn()) === "Sourdough starter", "typing in the row");
+    await page.keyboard.press("Escape");
+    await fakeMenu(null);
+    await page.keyboard.press("Shift+F10");
+    await until(async () => (await menuCalls()).length === 1, "the menu from the keys");
+    assert.equal((await menuCalls())[0].labels[0], "Edit");
+  });
+
+  await step("a long-press on a phone opens the same menu at the finger", async () => {
+    await fakeMenu(null);
+    const box = await page.locator(".item-head:has-text('Bread recipes')").first().boundingBox();
+    const [x, y] = [Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2)];
+    await page.evaluate(
+      ([x, y]) => {
+        const el = document.elementFromPoint(x, y);
+        const init = { pointerType: "touch", clientX: x, clientY: y, bubbles: true, isPrimary: true };
+        el.dispatchEvent(new PointerEvent("pointerdown", init));
+        setTimeout(() => {
+          el.dispatchEvent(new PointerEvent("pointerup", init));
+          el.dispatchEvent(new MouseEvent("click", { clientX: x, clientY: y, bubbles: true }));
+        }, 700);
+      },
+      [x, y],
+    );
+    await until(async () => (await menuCalls()).length === 1, "the menu from a long-press");
+    const [call] = await menuCalls();
+    assert.equal(call.labels[0], "Edit");
+    assert.deepEqual(call.at, { x, y });
+    await sleep(800);
+    assert.equal(await typingIn(), null, "the long-press didn't start typing");
+  });
+
+  await step("Summarize with Claude in the menu opens the summary and starts writing", async () => {
+    await fakeMenu(["Summarize with Claude…"]);
+    await page.click(".item-head:has-text('Bread recipes') .node-text", { button: "right" });
+    await page.waitForSelector(".modal:has-text('Summary of \"Bread recipes\"')");
+    // No Claude plugin in this test core: it says so, and the summary can still be typed.
+    await page.waitForSelector(".modal button:has-text('Write with Claude'):not([disabled])", { timeout: 30000 });
+    await page.click(".modal button:has-text('Cancel')");
   });
 
   await step("adding nodes with Enter", async () => {
@@ -279,8 +451,8 @@ try {
     assert.match(read, /Scoring patterns[\s\S]*Steam in the oven/);
   });
 
-  await step("tagging from the details", async () => {
-    await page.click(".item-head:has-text('Steam in the oven') .node-text");
+  await step("tagging from the details (Ctrl+click opens them)", async () => {
+    await page.click(".item-head:has-text('Steam in the oven') .node-text", { modifiers: ["Control"] });
     await page.waitForSelector(".details .d-text");
     const wish = await page.$eval(".details select.small-select", (s) =>
       [...s.options].find((o) => o.textContent.startsWith("lf-e2e Wish")).value,
@@ -290,7 +462,7 @@ try {
   });
 
   await step("a prototype's page shows live in the details", async () => {
-    await page.click(".item-head:has-text('Timer card') .node-text");
+    await page.click(".item-head:has-text('Timer card') .node-text", { modifiers: ["Control"] });
     await page.waitForSelector(".details iframe.proto-frame");
     const frame = page.frameLocator(".details iframe.proto-frame");
     await frame.locator("text=Countdown for the next fold.").waitFor();
@@ -346,13 +518,15 @@ try {
 
   await step("deleting a node from the details asks first", async () => {
     await page.setViewportSize({ width: 1180, height: 720 });
-    await page.click(".item-head:has-text('Oven temperatures') .node-text");
+    await page.click(".item-head:has-text('Oven temperatures') .node-text", { modifiers: ["Control"] });
     await page.click(".details button:has-text('Delete everywhere')");
     await page.waitForSelector(".modal:has-text('Delete \"Oven temperatures\"?')");
     await page.screenshot({ path: join(SHOTS, "delete-dialog-dark.png") });
     await page.click(".modal button:has-text('Delete everywhere')");
     await page.waitForSelector(".item-head:has-text('Oven temperatures')", { state: "detached" });
-    assert.equal((await tool("search", { query: "Oven temperatures", under: root })).length, 0);
+    // The row goes at once; the database delete follows.
+    const gone = async () => (await tool("search", { query: "Oven temperatures", under: root })).length === 0;
+    await until(gone, "deleted");
   });
 
   await step("no errors in the page", async () => {
