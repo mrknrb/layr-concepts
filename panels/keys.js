@@ -29,17 +29,22 @@ export function editAction(e, { empty = false, deletable = false } = {}) {
 }
 
 /**
- * What a key does on the picked row while nothing is typed: `prev` / `next` (↑ / ↓), `right` / `left` (open, into its
- * group / close, out to its parent), `up` / `down` (Alt+↑ / Alt+↓: move it), `child` (Ctrl+Enter), `edit` (Enter or
- * F2: type in it), `toggle` (Space), `remove` (Delete), `clear` (Esc), `menu` (the menu key or Shift+F10); null: not
- * one of ours.
+ * What a key does on the picked row while nothing is typed: `prev` / `next` (↑ / ↓), `extend-up` / `extend-down`
+ * (Shift+↑ / Shift+↓: the selection grows), `select-parents` / `select-children` (Ctrl+Shift+↑ / ↓), `right` / `left`
+ * (open, into its group / close, out to its parent), `up` / `down` (Alt+↑ / Alt+↓: move it), `child` (Ctrl+Enter),
+ * `edit` (Enter or F2: type in it), `details` (Alt+Enter), `toggle` (Space), `remove` (Delete), `connect` (C), `tags`
+ * (T), `move` (M), `clear` (Esc), `menu` (the menu key or Shift+F10); null: not one of ours.
  */
 export function rowAction(e) {
   const mod = e.ctrlKey || e.metaKey;
   const k = e.key;
+  const vertical = k === "ArrowUp" || k === "ArrowDown";
   if (k === "ContextMenu" || (k === "F10" && e.shiftKey)) return "menu";
   if (k === "Escape") return "clear";
-  if ((k === "ArrowUp" || k === "ArrowDown") && e.altKey && !mod) return k === "ArrowUp" ? "up" : "down";
+  if (vertical && e.altKey && !mod && !e.shiftKey) return k === "ArrowUp" ? "up" : "down";
+  if (vertical && mod && e.shiftKey && !e.altKey) return k === "ArrowUp" ? "select-parents" : "select-children";
+  if (vertical && e.shiftKey && !mod && !e.altKey) return k === "ArrowUp" ? "extend-up" : "extend-down";
+  if (k === "Enter" && e.altKey && !mod) return "details";
   if (mod || e.altKey) return k === "Enter" && mod ? "child" : null;
   if (k === "ArrowUp") return "prev";
   if (k === "ArrowDown") return "next";
@@ -48,7 +53,8 @@ export function rowAction(e) {
   if (k === "Enter" || k === "F2") return "edit";
   if (k === " ") return "toggle";
   if (k === "Delete") return "remove";
-  return null;
+  const letter = { c: "connect", t: "tags", m: "move" }[k.toLowerCase()];
+  return letter && !e.shiftKey ? letter : null;
 }
 
 /**

@@ -48,6 +48,17 @@ describe("keys on the picked row while nothing is typed", () => {
     expect(rowAction(key("ContextMenu"))).toBe("menu");
     expect(rowAction(key("F10", { shiftKey: true }))).toBe("menu");
   });
+  it("grows the selection, selects children or parents, and has letters for connect, tags and move", () => {
+    expect(rowAction(key("ArrowDown", { shiftKey: true }))).toBe("extend-down");
+    expect(rowAction(key("ArrowUp", { shiftKey: true }))).toBe("extend-up");
+    expect(rowAction(key("ArrowDown", { ctrlKey: true, shiftKey: true }))).toBe("select-children");
+    expect(rowAction(key("ArrowUp", { ctrlKey: true, shiftKey: true }))).toBe("select-parents");
+    expect(rowAction(key("Enter", { altKey: true }))).toBe("details");
+    expect(rowAction(key("c"))).toBe("connect");
+    expect(rowAction(key("T"))).toBe("tags");
+    expect(rowAction(key("m"))).toBe("move");
+    expect(rowAction(key("C", { shiftKey: true }))).toBe(null);
+  });
   it("leaves other keys and shortcuts to the page", () => {
     expect(rowAction(key("a"))).toBe(null);
     expect(rowAction(key("c", { ctrlKey: true }))).toBe(null);

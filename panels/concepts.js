@@ -1,77 +1,62 @@
-// The concept map panel: views and proposals on the side, a view's nodes as an outline in the middle, and the node
-// you pick on the right (its text, summary, tags, edges, places, threads, picture or prototype page). It reads and
-// writes the user's tables itself, as the signed-in user, with the same shared code the backend uses (shared/graph.js,
-// shared/ops.js) on the Supabase session layr gives it (layr__supabase_session); accepting a proposal runs on the
-// backend (the PC). Ported from layr_code's plugins/concepts/panels (views.tsx, view.tsx, store.ts), simplified: an
-// outline instead of laid-out boxes.
+// The concept map panel: views and proposals on the side, a view's nodes in the middle, and the node you pick on the
+// right (its text, summary, tags, edges, places, threads, picture or prototype page). It reads and writes the user's
+// tables itself, as the signed-in user, with the same shared code the backend uses (shared/graph.js, shared/ops.js) on
+// the Supabase session layr gives it (layr__supabase_session); accepting a proposal runs on the backend (the PC).
+// Rebuilt from layr_code's plugins/concepts/panels (view.tsx, store.ts, drag.tsx): each node's children laid out per
+// view (vertical, horizontal, or free on a canvas with automatic arrangements), several rows selected at once, rows
+// dragged between groups, Markdown in node texts, prototypes folded out under their nodes, tags, edges, and links to
+// the pipeline and Claude threads. The page is built anew on each change and morphed into place (dom.js).
 import { firstLine, Graph } from "../shared/graph.js";
-import { prototypeDocument } from "../shared/links.js";
+import { layrLink, layrMarkdownLink, parseLayrLink, prototypeLink } from "../shared/links.js";
 import { Ops } from "../shared/ops.js";
-import { edgeName, nodeLabel, viewRootLabel } from "../shared/outline.js";
+import { edgeName, nodeLabel, shortId, viewRootLabel } from "../shared/outline.js";
+import { readOutline } from "../shared/read.js";
 import { applyBundle, applyRow, TABLES, TAG_COLORS } from "../shared/rows.js";
 import { createSupabase } from "../shared/supabase.js";
-import { editAction, rowAction, shownText, textToSave } from "./keys.js";
-import { nodeMenuItems } from "./nodemenu.js";
+import { ask, confirmIt, isOpen as modalOpen, modal, pick, pickNode, showText } from "./dialogs.js";
+import { h, icon, iconButton, morphChildren } from "./dom.js";
+import { dragFrom, targetAt } from "./drag.js";
+import { editAction, rowAction, textToSave } from "./keys.js";
+import { layOut } from "./layout.js";
+import { hasMarkdown, renderMarkdown } from "./markdown.js";
+import { showMenu } from "./menu.js";
+import {
+  acceptMove,
+  AREA,
+  AREA_MIN,
+  areaSize,
+  clickSelect,
+  dimmed,
+  edgesHere,
+  edgeText,
+  extendSelection,
+  firstPlace,
+  fitAll,
+  isTypeBadge,
+  LAYOUT_INFO,
+  otherEnd,
+  segment,
+  sortTypes,
+  step,
+  WIDTH,
+  zoomAt,
+} from "./model.js";
+import { bulkMenuItems, edgeItems, layoutOf, nodeMenuItems, tagItems, tagPillItems, useOrderOf } from "./nodemenu.js";
+import { cssReady, protoEmbed } from "./proto.js";
+import { manageTags } from "./tagsui.js";
 
 const PAGE = 100;
+/** Children a free layout loads at most (they are all drawn). */
+const FREE_MAX = 5000;
 const $ = (sel, root = document) => root.querySelector(sel);
-
-/** `h("div.a.b", {onclick}, children…)`: an element. Strings become text; null/false are skipped. */
-function h(tag, props = {}, ...children) {
-  const [name, ...classes] = tag.split(".");
-  const el = document.createElement(name || "div");
-  if (classes.length) el.className = classes.join(" ");
-  if (props && (typeof props !== "object" || props instanceof Node || Array.isArray(props))) {
-    children.unshift(props);
-    props = {};
-  }
-  for (const [k, v] of Object.entries(props ?? {})) {
-    if (v === undefined || v === null || v === false) continue;
-    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else if (k === "class") el.className += ` ${v}`;
-    else if (k === "dataset") Object.assign(el.dataset, v);
-    else if (k === "style") el.style.cssText = v;
-    else if (k in el && k !== "list") el[k] = v;
-    else el.setAttribute(k, v === true ? "" : v);
-  }
-  for (const c of children.flat(Infinity)) {
-    if (c === null || c === undefined || c === false) continue;
-    el.append(c instanceof Node ? c : document.createTextNode(String(c)));
-  }
-  return el;
-}
-
-const ICONS = {
-  plus: "M11 5h2v14h-2zM5 11h14v2H5z",
-  refresh: "M17.6 6.4A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.8-4.2L13 11h7V4z",
-  side: "M3 5h18v14H3zm2 2v10h4V7z",
-  close: "M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4z",
-  search: "M10 4a6 6 0 0 1 4.8 9.6l4.6 4.6-1.4 1.4-4.6-4.6A6 6 0 1 1 10 4zm0 2a4 4 0 1 0 0 8 4 4 0 0 0 0-8z",
-  up: "M12 7l6 6-1.4 1.4L12 9.8l-4.6 4.6L6 13z",
-  down: "M12 17l-6-6 1.4-1.4 4.6 4.6 4.6-4.6L18 11z",
-  picture: "M4 5h16v14H4zm2 2v8l4-4 3 3 2-2 3 3V7zm9 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z",
-  proto: "M3 4h18v16H3zm2 4v10h14V8zm2 2h6v2H7zm0 3h10v2H7z",
-  summary: "M4 6h16v2H4zm0 5h16v2H4zm0 5h10v2H4z",
-  open: "M14 3h7v7h-2V6.4l-9.3 9.3-1.4-1.4L17.6 5H14zM5 5h6v2H7v10h10v-4h2v6H5z",
-};
-const icon = (name, size = 16) => {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("width", size);
-  svg.setAttribute("height", size);
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", ICONS[name]);
-  path.setAttribute("fill", "currentColor");
-  svg.append(path);
-  return svg;
-};
-const iconButton = (name, title, onclick, extra = "") =>
-  h(`button.layr-button.ghost.icon${extra}`, { title, "aria-label": title, onclick }, icon(name));
 
 // ---------------------------------------------------------------- state
 
 await layr.ready;
-const supabase = createSupabase({ session: () => layr.tools.run("supabase_session", {}, { plugin: "layr" }) });
+// The panel's tests hand it tables of their own (test/harness): the same calls, in memory.
+const supabase = window.conceptsTestTables
+  ? { tables: window.conceptsTestTables, storage: window.conceptsTestStorage }
+  : createSupabase({ session: () => layr.tools.run("supabase_session", {}, { plugin: "layr" }) });
 const { tables, storage } = supabase;
 const graph = new Graph();
 const ops = new Ops(graph, tables, () => schedule());
@@ -82,12 +67,16 @@ const S = {
   error: "",
   viewId: saved.view ?? null,
   root: saved.root ?? null,
-  selected: saved.selected ?? null,
+  selected: saved.selected ?? null, // the node whose details show
   side: saved.side ?? true,
   summaries: saved.summaries ?? true,
+  tagFilter: Array.isArray(saved.tags) ? saved.tags : [], // tags whose nodes show as usual, the others dimmed
+  lastType: saved.lastType ?? null, // the edge type used last: first in the list
+  spots: saved.spots ?? {}, // pan and zoom of a root laid out freely, by `<view>/<root>`
   views: [],
   proposals: [],
   unplaced: { nodes: [], total: 0 },
+  crumbs: [], // the groups the root is in
   query: "",
   hits: null,
   types: [],
@@ -95,19 +84,39 @@ const S = {
   adderText: "",
   editing: null, // the row whose text is typed in: a group conn, or "root" for the root's title
   cursor: null, // the row the keys work on while nothing is typed (a group conn)
+  selection: [], // rows chosen with Ctrl or Shift+click, Shift+↑↓ or Select (group conns)
+  anchor: null, // where Shift+click ranges start
+  connecting: null, // {from: [nodes]}: connecting by clicking the other end
+  editingEdge: null, // `<edge> <node>`: an edge chip whose label is typed in
   focus: null, // the row to type in after the next render
-  pages: new Map(), // prototype node → html
   pictures: new Map(), // node → {row, url}
+  pages: new Map(), // prototype node → html (the details)
   threads: new Map(), // node → thread rows
-  zoom: 100,
+  sizes: new Map(), // free layouts: measured box of each child, by group conn
+  generated: new Map(), // free layouts arranged automatically: parent → Map(group conn → {x, y})
+  plugins: { pipeline: false, claude: false }, // other plugins whose tools this panel can call
 };
 const narrow = () => window.innerWidth < 640;
 if (narrow() && saved.side === undefined) S.side = false;
 
 const remember = () =>
   void layr.panel
-    .setState({ view: S.viewId, root: S.root, selected: S.selected, side: S.side, summaries: S.summaries })
+    .setState({
+      view: S.viewId,
+      root: S.root,
+      selected: S.selected,
+      side: S.side,
+      summaries: S.summaries,
+      tags: S.tagFilter,
+      lastType: S.lastType,
+      spots: S.spots,
+    })
     .catch(() => {});
+let rememberTimer;
+const rememberSoon = () => {
+  clearTimeout(rememberTimer);
+  rememberTimer = setTimeout(remember, 400);
+};
 
 // ---------------------------------------------------------------- reads
 
@@ -116,7 +125,11 @@ const db = {
   level: (parents, skip = 0, size = PAGE) => tables.rpc("level", { parents, skip, page_size: size }),
   get: (ids) => tables.rpc("get", { ids }),
   search: (q, max = 30) => tables.rpc("search", { q, max_hits: max }),
+  where: (id) => tables.rpc("where", { node_id: id }),
+  tagCounts: () => tables.rpc("tag_counts", {}),
 };
+/** The plugin's read functions, for outlines made the way the AI reads (shared/read.js). */
+const loader = { get: db.get, level: db.level, where: db.where };
 
 /** Load the nodes `ids` that aren't loaded yet (an edge's other end, its type). */
 async function need(ids) {
@@ -149,6 +162,14 @@ async function loadSide() {
   S.unplaced = unplaced;
 }
 
+/** The children of `node` that are open in the view, deeper too, until all of them are loaded. */
+async function loadOpen(nodes, depth = 0) {
+  const open = nodes.filter((n) => graph.node(n) && isOpen(n) && graph.childCount(n) && !graph.expanded.has(n));
+  if (open.length && depth < 12) applyBundle(graph, await db.level(open));
+  const next = nodes.filter((n) => isOpen(n)).flatMap((n) => graph.children(n).map((g) => g.data.to));
+  if (next.length && depth < 12) await loadOpen([...new Set(next)], depth + 1);
+}
+
 /** Everything again: the side, and the view (or node) shown with what is open in it. */
 async function reload() {
   graph.clear();
@@ -163,9 +184,13 @@ async function reload() {
     if (!graph.node(S.root)) S.root = view?.data.root ?? null;
     else applyBundle(graph, await db.level([S.root]));
   }
+  if (S.root) await loadOpen(graph.children(S.root).map((g) => g.data.to)).catch(() => {});
   await need(edgeEnds());
   S.types = (await tables.rpc("types", {})).types ?? [];
   if (S.selected && !graph.node(S.selected)) await need([S.selected]);
+  S.crumbs = S.root ? (await db.where(S.root).catch(() => null))?.parents ?? [] : [];
+  const rows = new Set(graph.conns.keys());
+  S.selection = S.selection.filter((c) => rows.has(c));
   S.mode = "ready";
 }
 
@@ -176,7 +201,7 @@ async function refresh() {
     try {
       await reload();
     } catch (error) {
-      if (/Not signed in|not signed in/.test(error.message)) S.mode = "signedOut";
+      if (/not signed in/i.test(error.message)) S.mode = "signedOut";
       else if (S.mode !== "ready") {
         S.mode = "error";
         S.error = error.message;
@@ -195,6 +220,24 @@ async function expand(node) {
   applyBundle(graph, await db.level([node]));
   await need(edgeEnds());
   schedule();
+}
+
+/** Every child of `node` (up to FREE_MAX): a free layout draws all of them. */
+const loadingAll = new Set();
+async function loadAll(node) {
+  if (loadingAll.has(node)) return;
+  loadingAll.add(node);
+  try {
+    while (graph.children(node).length < Math.min(FREE_MAX, graph.childCount(node))) {
+      const have = graph.children(node).length;
+      applyBundle(graph, await db.level([node], have, 1000));
+      if (graph.children(node).length === have) break;
+    }
+    await need(edgeEnds());
+  } finally {
+    loadingAll.delete(node);
+    schedule();
+  }
 }
 
 /** Run a write; show what went wrong instead of throwing, and read everything again then (the graph may be off). */
@@ -220,7 +263,11 @@ const sortedViews = () =>
         a.id.localeCompare(b.id),
     );
 
-const isOpen = (node) => !!(S.viewId && graph.look(S.viewId, node)?.open);
+const label = (node) => nodeLabel(graph, node);
+const look = (node) => (S.viewId ? graph.look(S.viewId, node) : undefined);
+const isOpen = (node) => !!look(node)?.open;
+/** How the view shown looks, for the menus (nodemenu.js). */
+const menuCtx = () => ({ look, view: !!S.viewId, pipeline: S.plugins.pipeline, claude: S.plugins.claude });
 
 /** Whether the children of `node` are on screen: it is the root, or open inside a group that shows its children. */
 function showing(node, seen = new Set()) {
@@ -230,98 +277,35 @@ function showing(node, seen = new Set()) {
   return graph.parents(node).some((g) => showing(g.data.from, seen));
 }
 
-// ---------------------------------------------------------------- dialogs (layr.js has no pickers: these are ours)
-
-function modal(build) {
-  const back = $("#modal");
-  return new Promise((resolve) => {
-    const done = (value) => {
-      back.hidden = true;
-      back.replaceChildren();
-      document.removeEventListener("keydown", onKey, true);
-      resolve(value);
-    };
-    const onKey = (e) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        done(null);
-      }
-    };
-    document.addEventListener("keydown", onKey, true);
-    back.onclick = (e) => e.target === back && done(null);
-    back.replaceChildren(h("div.modal.layr-card", { role: "dialog" }, build(done)));
-    back.hidden = false;
-    setTimeout(() => $("input, textarea, select, button.primary", back)?.focus(), 0);
-  });
-}
-
-const ask = (title, value = "", placeholder = "") =>
-  modal((done) => {
-    const input = h("input.layr-input", { value, placeholder });
-    input.onkeydown = (e) => e.key === "Enter" && done(input.value.trim() || null);
-    return [
-      h("h3.modal-title", title),
-      input,
-      h(
-        "div.modal-actions",
-        h("button.layr-button", { onclick: () => done(null) }, "Cancel"),
-        h("button.layr-button.primary", { onclick: () => done(input.value.trim() || null) }, "OK"),
-      ),
-    ];
-  });
-
-const confirmIt = (title, text, action, danger = true) =>
-  modal((done) => [
-    h("h3.modal-title", title),
-    text && h("p.layr-muted", text),
-    h(
-      "div.modal-actions",
-      h("button.layr-button", { onclick: () => done(false) }, "Cancel"),
-      h(`button.layr-button${danger ? ".danger" : ".primary"}`, { onclick: () => done(true) }, action),
-    ),
-  ]);
-
-/** Pick any node: what you type searches all of them. */
-const pickNode = (title, exclude = () => false) =>
-  modal((done) => {
-    const input = h("input.layr-input", { placeholder: "Type to search", type: "search" });
-    const list = h("ul.layr-list.pick-list");
-    let timer;
-    input.oninput = () => {
-      clearTimeout(timer);
-      timer = setTimeout(async () => {
-        const q = input.value.trim();
-        if (!q) return list.replaceChildren();
-        const hits = (await db.search(q, 30).catch(() => [])).filter((x) => !exclude(x.id));
-        list.replaceChildren(
-          ...hits.map((x) =>
-            h(
-              "li",
-              { onclick: () => done(x.id) },
-              h("div.pick-label", firstLine(x.text) || "(empty)"),
-              h("div.pick-path.layr-muted", x.path.map((p) => p.text || "(empty)").join(" › ")),
-            ),
-          ),
-          hits.length ? null : h("li.layr-muted", "Nothing found"),
-        );
-      }, 200);
-    };
-    return [h("h3.modal-title", title), input, list];
-  });
+/** Change how `node` looks in the view shown. */
+const setLook = (node, patch) => (S.viewId ? run(() => ops.setLook(S.viewId, node, patch)) : undefined);
 
 // ---------------------------------------------------------------- actions
 
-async function newView() {
-  const text = await ask("New view", "", "Root concept, e.g. Recipes");
-  if (!text) return;
-  const view = await run(async () => ops.addView(await ops.createNode(text)));
+async function newView(root) {
+  let node = root;
+  if (!node) {
+    const text = await ask("New view", "", "Root concept, e.g. Recipes");
+    if (!text) return;
+    node = await run(() => ops.createNode(text));
+    if (!node) return;
+  }
+  const view = await run(() => ops.addView(node));
   if (view) await openView(view);
+}
+
+async function renameView() {
+  const v = S.viewId && graph.views.get(S.viewId);
+  if (!v) return;
+  const name = await ask("Name of this view (empty: no name)", v.data.name ?? "", "", { empty: true });
+  if (name !== null) await run(() => ops.updateView(v.id, { name }));
 }
 
 async function openView(id) {
   S.viewId = id;
   S.root = graph.views.get(id)?.data.root ?? null;
   S.selected = null;
+  clearSelection();
   if (narrow()) S.side = false;
   remember();
   await refresh();
@@ -331,6 +315,7 @@ async function openView(id) {
 async function focusRoot(node) {
   S.root = node;
   S.selected = null;
+  clearSelection();
   if (narrow()) S.side = false;
   remember();
   await refresh();
@@ -338,18 +323,17 @@ async function focusRoot(node) {
 
 /** Show a node found anywhere: inside a group it is in (a view's root first), selected. */
 async function reveal(node) {
-  const where = await tables.rpc("where", { node_id: node });
+  const where = await db.where(node);
+  const scroll = () => setTimeout(() => flash(node), 60);
   // Already on screen (in the root, or in a group open below it): only picked.
   const shown = where.parents.find((p) => showing(p.id));
-  if (shown) {
+  if (shown || node === S.root) {
     await select(node);
-    setTimeout(() => $(`.item-head[data-node="${node}"]`)?.scrollIntoView({ block: "center" }), 50);
-    return;
+    return scroll();
   }
   const roots = new Set(sortedViews().map((v) => v.data.root));
   if (roots.has(node)) {
-    const view = sortedViews().find((v) => v.data.root === node);
-    await openView(view.id);
+    await openView(sortedViews().find((v) => v.data.root === node).id);
     return;
   }
   const parent = where.parents.find((p) => roots.has(p.id))?.id ?? where.parents[0]?.id;
@@ -361,9 +345,19 @@ async function reveal(node) {
     S.root = parent ?? node;
   }
   S.selected = parent ? node : null;
+  clearSelection();
   remember();
   await refresh();
-  setTimeout(() => $(`.item-head[data-node="${node}"]`)?.scrollIntoView({ block: "center" }), 50);
+  scroll();
+}
+
+/** Point at a node's row for a moment. */
+function flash(node) {
+  const head = $(`#main .item-head[data-node="${node}"]`);
+  if (!head) return;
+  head.scrollIntoView({ block: "center" });
+  head.classList.add("flash");
+  setTimeout(() => head.classList.remove("flash"), 2000);
 }
 
 async function toggle(node) {
@@ -372,9 +366,26 @@ async function toggle(node) {
   if (open) await expand(node).catch((e) => layr.ui.notify(e.message, "error"));
 }
 
-async function addNode(parent, text, index) {
-  const made = await run(() => ops.addNewChild(parent, text, index));
-  return made?.node;
+/** Open (or close) `nodes` and everything below them that has children, in this view (at most 300 groups). */
+async function openAll(nodes, open) {
+  if (!S.viewId) return;
+  let budget = 300;
+  const seen = new Set();
+  const walk = async (node) => {
+    if (seen.has(node) || budget-- <= 0 || graph.childCount(node) === 0) return;
+    seen.add(node);
+    const was = isOpen(node);
+    if (open) {
+      if (!was) await ops.setLook(S.viewId, node, { open: true });
+      await expand(node);
+    }
+    for (const k of graph.children(node)) await walk(k.data.to);
+    if (!open && was) await ops.setLook(S.viewId, node, { open: false });
+  };
+  await run(async () => {
+    for (const n of nodes) await walk(n);
+  });
+  if (budget <= 0) layr.ui.notify(open ? "Opened the first 300 groups" : "Closed the first 300 groups");
 }
 
 async function select(node) {
@@ -389,7 +400,10 @@ async function select(node) {
     n?.data.prototype ? tables.select(TABLES.pages, { node }).catch(() => []) : [],
     n?.data.image ? tables.select(TABLES.images, { node }).catch(() => []) : [],
   ]);
-  S.threads.set(node, threads.sort((a, b) => b.at.localeCompare(a.at)));
+  S.threads.set(
+    node,
+    threads.sort((a, b) => b.at.localeCompare(a.at)),
+  );
   if (page[0]) S.pages.set(node, page[0].html);
   if (pic[0]) {
     const url = await storage.signedUrl(pic[0].path).catch(() => null);
@@ -417,7 +431,7 @@ async function declineProposal(p) {
 async function deleteNode(node) {
   const places = graph.parentCount(node);
   const ok = await confirmIt(
-    `Delete "${nodeLabel(graph, node)}"?`,
+    `Delete "${label(node)}"?`,
     `It goes from ${places === 1 ? "its group" : `all ${places} groups`}; the nodes inside it stay.`,
     "Delete everywhere",
   );
@@ -427,42 +441,71 @@ async function deleteNode(node) {
   if (S.root === node) await focusRoot(graph.views.get(S.viewId)?.data.root ?? null);
 }
 
-async function removeFromGroup(groupId) {
-  const g = graph.group(groupId);
-  if (!g) return;
-  if (graph.parentCount(g.data.to) <= 1) {
-    const ok = await confirmIt(
-      `Take "${nodeLabel(graph, g.data.to)}" out of "${nodeLabel(graph, g.data.from)}"?`,
-      "It is in no other group, so it will be in none (Not in any group lists it).",
-      "Take it out",
-    );
-    if (!ok) return;
-  }
-  await run(() => ops.removeFromGroup(groupId));
+/** Take rows out of their groups, or delete their nodes everywhere (several, or one in no other group): asked. */
+async function removeRows(conns) {
+  const rows = conns.filter((c) => graph.group(c));
+  if (!rows.length) return;
+  const nodes = [...new Set(rows.map((c) => graph.group(c).data.to))];
+  const lonely = nodes.filter((n) => graph.parentCount(n) <= 1).length;
+  if (rows.length === 1 && !lonely) return void run(() => ops.removeFromGroup(rows[0]));
+  const what = rows.length > 1 ? `${rows.length} nodes` : `"${label(nodes[0])}"`;
+  const answer = await modal((done) => [
+    h("h3.modal-title", `Remove ${what}?`),
+    h(
+      "p.layr-muted",
+      lonely
+        ? `${
+            lonely === nodes.length ? (nodes.length > 1 ? "They are" : "It is") : `${lonely} of them are`
+          } in no other ` + "group: taken out, they will be in none (Not in any group lists them)."
+        : "They stay in their other groups.",
+    ),
+    h(
+      "div.modal-actions",
+      h("button.layr-button", { onclick: () => done(null) }, "Cancel"),
+      h("button.layr-button.danger", { onclick: () => done("delete") }, "Delete everywhere"),
+      h(
+        "button.layr-button.primary",
+        { onclick: () => done("remove") },
+        rows.length > 1 ? "Take them out" : "Take it out",
+      ),
+    ),
+  ]);
+  if (!answer) return;
+  await run(async () => {
+    if (answer === "remove") for (const c of rows) if (graph.group(c)) await ops.removeFromGroup(c);
+    if (answer === "delete") for (const n of nodes) if (graph.node(n)) await ops.deleteNode(n);
+  });
+  clearSelection();
+  schedule();
 }
 
 async function moveBy(groupId, delta) {
   const g = graph.group(groupId);
+  if (!g) return false;
   const siblings = graph.children(g.data.from);
   const index = siblings.findIndex((c) => c.id === groupId) + delta;
-  if (index < 0 || index >= siblings.length) return;
+  if (index < 0 || index >= siblings.length) return false;
   await run(() => ops.moveChild(groupId, delta > 0 ? index + 1 : index));
+  return true;
 }
 
-async function moveTo(groupId) {
-  const g = graph.group(groupId);
-  const target = await pickNode(`Move "${nodeLabel(graph, g.data.to)}" into…`, (id) => id === g.data.to);
-  if (!target) return;
-  await run(async () => {
-    await need([target]);
-    applyBundle(graph, await db.level([target], 0, 1000));
-    await ops.moveToGroup(groupId, target);
-  });
-  await refresh();
+/** Move (or with `copy`, also put) the rows `conns` into a node found by searching. */
+async function moveBySearch(conns, copy) {
+  const nodes = conns.map((c) => graph.group(c)?.data.to).filter(Boolean);
+  if (!nodes.length) return;
+  const what = nodes.length > 1 ? `${nodes.length} nodes` : `"${label(nodes[0])}"`;
+  const to = await pickNode(`${copy ? "Also put" : "Move"} ${what} into…`, db.search, (id) => nodes.includes(id));
+  if (!to) return;
+  await run(() => need([to]));
+  const t = { kind: "into", node: to };
+  if (!acceptMove(graph, conns, t)) return layr.ui.notify("Not into itself or what is inside it", "error");
+  await dropNodes(conns, t, copy);
 }
 
-async function alsoIn(node) {
-  const target = await pickNode(`Also put "${nodeLabel(graph, node)}" into…`, (id) => id === node);
+/** Put `node` into a node found by searching too (`group`: the row it is shown through). */
+async function alsoIn(node, group) {
+  if (group) return moveBySearch([group], true);
+  const target = await pickNode(`Also put "${label(node)}" into…`, db.search, (id) => id === node);
   if (!target) return;
   await run(async () => {
     await need([target]);
@@ -472,51 +515,578 @@ async function alsoIn(node) {
   await refresh();
 }
 
-async function addEdge(from) {
-  const to = await pickNode(`Connect "${nodeLabel(graph, from)}" to…`, (id) => id === from);
-  if (!to) return;
-  await need([to]);
-  const choice = await modal((done) => {
-    const type = h(
-      "select.layr-select",
-      h("option", { value: "" }, "No type"),
-      ...S.types.map((t) => h("option", { value: t.id }, t.text || "(empty)")),
-      h("option", { value: "new" }, "New type…"),
+/** Put an existing node (found by searching) inside `node`. */
+async function putInside(node, group) {
+  const picked = await pickNode(`Put inside "${label(node)}"…`, db.search, (id) => id === node);
+  if (!picked) return;
+  const added = await run(async () => {
+    await need([picked]);
+    return ops.addChild(node, picked);
+  });
+  if (added && group && !isOpen(node)) await toggle(node);
+}
+
+/**
+ * Drop the rows `conns` on `t`: between two rows, into a node (last) or into a free layout (where it was dropped).
+ * They move there, in their order; with `copy` (Ctrl), they are put there too and stay where they were.
+ */
+async function dropNodes(conns, t, copy) {
+  const dest = t.kind === "into" ? t.node : t.parent;
+  const moving = new Set(conns);
+  // They land before this child of `dest` (none: last).
+  const before =
+    t.kind === "gap"
+      ? graph
+          .children(dest)
+          .slice(t.index)
+          .find((c) => !moving.has(c.id))?.id
+      : undefined;
+  const placed = [];
+  await run(async () => {
+    if (!graph.node(dest)) await need([dest]);
+    for (const [i, conn] of conns.entries()) {
+      const g = graph.group(conn);
+      if (!g) continue;
+      const at = () => {
+        const index = before
+          ? graph
+              .children(dest)
+              .filter((c) => c.id !== conn)
+              .findIndex((c) => c.id === before)
+          : -1;
+        return index < 0 ? undefined : index;
+      };
+      let now = conn;
+      if (g.data.from === dest) {
+        if (t.kind === "gap") await ops.moveChild(conn, at() ?? Number.MAX_SAFE_INTEGER);
+      } else if (copy) {
+        if (graph.membership(dest, g.data.to)) continue;
+        now = await ops.addChild(dest, g.data.to, at());
+      } else {
+        now = await ops.moveToGroup(conn, dest, at());
+      }
+      if (!now) continue;
+      placed.push(now);
+      if (t.kind === "free" && S.viewId) await ops.setLook(S.viewId, g.data.to, { x: t.x + i * 24, y: t.y + i * 24 });
+    }
+  });
+  if (t.kind === "into" && t.group && !isOpen(dest)) await toggle(dest);
+  if (placed.length > 1) S.selection = placed;
+  S.cursor = placed[0] ?? S.cursor;
+  if (t.kind === "into" && !t.group && dest !== S.root) {
+    layr.ui.notify(`${copy ? "Also put in" : "Moved into"} "${label(dest)}"`);
+  }
+  schedule();
+}
+
+// ---------- selection
+
+function clearSelection() {
+  S.selection = [];
+  S.anchor = null;
+  S.connecting = null;
+}
+
+/** The rows shown in this view, top to bottom: what the arrow keys walk through. */
+const visibleRows = () => [...document.querySelectorAll("#main .item-head[data-group]")].map((el) => el.dataset.group);
+const rowHead = (conn) => $(`#main .item-head[data-group="${conn}"]`);
+/** The selected rows in the order they show, or the cursor's row: what keys and menus act on. */
+function targets() {
+  const chosen = new Set(S.selection);
+  if (chosen.size) return visibleRows().filter((c) => chosen.has(c));
+  return S.cursor && graph.group(S.cursor) ? [S.cursor] : [];
+}
+const targetNodes = () => [
+  ...new Set(
+    targets()
+      .map((c) => graph.group(c)?.data.to)
+      .filter(Boolean),
+  ),
+];
+
+function selectClick(conn, range) {
+  if (document.activeElement?.isContentEditable) document.activeElement.blur();
+  const next = clickSelect(S.selection, visibleRows(), S.anchor, conn, range);
+  S.selection = next.selection;
+  S.anchor = next.anchor;
+  S.cursor = conn;
+  schedule();
+}
+
+/** Wait (a second at most) until opened rows have drawn what `rows` finds: it stops growing, or reaches `want`. */
+async function drawn(rows, want = Infinity) {
+  let [last, still] = [-1, 0];
+  for (let i = 0; i < 60; i++) {
+    render();
+    const n = rows().length;
+    if (n >= want) break;
+    still = n === last ? still + 1 : 0;
+    if (still >= 6 && n > 0) break;
+    last = n;
+    await new Promise((done) => requestAnimationFrame(done));
+  }
+  return [...new Set(rows())];
+}
+
+/** The rows shown inside the row `conn` (none: the root), at any depth. */
+const rowsInside = (conn) => {
+  const box = conn ? rowHead(conn)?.closest(".item")?.querySelector(":scope > .item-children") : $("#body");
+  return [...(box?.querySelectorAll(".item-head[data-group]") ?? [])].map((el) => el.dataset.group);
+};
+
+/**
+ * Select rows related to the rows at `places` (group conns; null for the root) instead of them: their children or
+ * everything inside them (closed ones are opened first), their parents, or them and their siblings.
+ */
+async function selectRelated(places, related) {
+  if (related === "clear") {
+    clearSelection();
+    return schedule();
+  }
+  const nodeAt = (p) => (p ? graph.group(p)?.data.to : S.root);
+  let rows = [];
+  if (related === "children" || related === "inside") {
+    const parents = places.filter((p) => graph.childCount(nodeAt(p) ?? "") > 0);
+    if (!parents.length) return layr.ui.notify("Nothing is inside them");
+    for (const p of parents) {
+      const node = nodeAt(p);
+      if (related === "inside") await openAll(p ? [node] : graph.children(node).map((k) => k.data.to), true);
+      else if (p && !isOpen(node)) await toggle(node);
+      else await expand(node).catch(() => {});
+    }
+    if (related === "children") {
+      const wanted = new Set(parents.flatMap((p) => graph.children(nodeAt(p)).map((k) => k.id)));
+      rows = await drawn(() => visibleRows().filter((c) => wanted.has(c)), wanted.size);
+    } else rows = await drawn(() => parents.flatMap(rowsInside));
+  } else if (related === "parents") {
+    const up = (c) =>
+      rowHead(c)?.closest(".item-children")?.closest(".item")?.querySelector(".item-head")?.dataset.group;
+    rows = [...new Set(places.map((p) => (p ? up(p) : undefined)).filter(Boolean))];
+    if (!rows.length) return layr.ui.notify("They are right below the root");
+  } else {
+    const wanted = new Set(
+      places.flatMap((p) => {
+        const from = p ? graph.group(p)?.data.from : undefined;
+        return from ? graph.children(from).map((k) => k.id) : [];
+      }),
     );
-    const label = h("input.layr-input", { placeholder: "Label (optional), e.g. sometimes" });
+    rows = visibleRows().filter((c) => wanted.has(c));
+  }
+  if (!rows.length) return;
+  S.selection = rows;
+  S.cursor = rows[0];
+  S.anchor = rows[0];
+  schedule();
+  setTimeout(() => rowHead(rows[0])?.scrollIntoView({ block: "nearest" }), 30);
+}
+
+// ---------- connecting and edges
+
+/** Ask for an edge type: an existing one (the one used last first), a new one, or none. Undefined when cancelled. */
+async function pickType(title, current) {
+  const { types } = await tables.rpc("types", {}).catch(() => ({ types: S.types }));
+  S.types = types ?? S.types;
+  const choice = await pick(title, [
+    ...sortTypes(S.types, S.lastType).map((t) => ({
+      label: t.id === current ? `${t.text} (now)` : t.text || "(empty)",
+      description: [t.id === S.lastType ? "Used last" : "", t.meaning ?? ""].filter(Boolean).join(" · "),
+      value: `type:${t.id}`,
+    })),
+    { label: "New type…", value: "new", description: 'Added to "Edge types"' },
+    { label: "No type", value: "none", description: "Only a free label" },
+  ]);
+  if (!choice) return undefined;
+  if (choice === "none") return null;
+  const remembered = (id) => {
+    S.lastType = id;
+    remember();
+    return id;
+  };
+  if (choice.startsWith("type:")) return remembered(choice.slice(5));
+  const name = await ask("New edge type", "", "e.g. is a, causes, made from");
+  if (!name) return undefined;
+  const made = await run(() => ops.addEdgeType(name));
+  return made ? remembered(made) : undefined;
+}
+
+/** Edges from each of `from` to `to`: only their type is asked; they hold everywhere. */
+async function connectTo(from, to) {
+  const froms = from.filter((f) => f !== to);
+  if (!froms.length) return;
+  await run(() => need([to]));
+  const what = froms.length > 1 ? `${froms.length} nodes` : `"${label(froms[0])}"`;
+  const relation = await pickType(`Edge from ${what} to "${label(to)}": its type`);
+  if (relation === undefined) return;
+  // One edge per pair and type: those that have it already are left as they are.
+  const has = (f) =>
+    graph.edgesOf(f).some((e) => e.data.from === f && e.data.to === to && (e.data.relation ?? null) === relation);
+  const skipped = froms.filter(has).length;
+  await run(async () => {
+    for (const f of froms) if (!has(f)) await ops.addEdge(f, to, { relation: relation ?? undefined });
+  });
+  if (skipped) layr.ui.notify(skipped === froms.length ? "That edge is there already" : `${skipped} had it already`);
+}
+
+/** Connect `from` to a node found by searching (the group's other children first). */
+async function connectBySearch(from) {
+  const parent = graph.parents(from[0])[0]?.data.from;
+  const first = parent
+    ? graph
+        .children(parent)
+        .map((g) => g.data.to)
+        .filter((id) => !from.includes(id))
+        .slice(0, 30)
+        .map((id) => ({ id, label: label(id), description: "In this group" }))
+    : [];
+  const what = from.length > 1 ? `${from.length} nodes` : `"${label(from[0])}"`;
+  const to = await pickNode(`Edge from ${what} to…`, db.search, (id) => from.includes(id), first);
+  if (to) await connectTo(from, to);
+}
+
+/** Connect by clicking: the next node clicked is the other end (Esc cancels; Search… finds one). */
+function startConnecting(from) {
+  if (!from.length) return;
+  S.connecting = { from };
+  schedule();
+}
+
+const edgeActs = {
+  show: (node) => void reveal(node).catch((e) => layr.ui.notify(e.message, "error")),
+  editLabel: (edgeId) => {
+    const e = graph.edge(edgeId);
+    if (!e) return;
+    const chip = $(`#main [data-edge="${edgeId}"]`);
+    if (!chip) {
+      return void ask("Edge label", e.data.label ?? "", "", { empty: true }).then(
+        (text) => text !== null && run(() => ops.updateEdge(edgeId, { label: text })),
+      );
+    }
+    S.editingEdge = `${edgeId} ${chip.dataset.from}`;
+    schedule();
+  },
+  changeType: async (edgeId) => {
+    const relation = await pickType("Type of the edge", graph.edge(edgeId)?.data.relation);
+    if (relation !== undefined) await run(() => ops.updateEdge(edgeId, { relation }));
+  },
+  holdIn: (edgeId, parent) => void run(() => ops.updateEdge(edgeId, { in: parent })),
+  deleteEdge: (edgeId) => void run(() => ops.deleteEdge(edgeId)),
+};
+
+function edgeMenu(edgeId, node, parent, at) {
+  void showMenu(edgeItems(graph, edgeId, node, parent, edgeActs), at).catch((e) => layr.ui.notify(e.message, "error"));
+}
+
+// ---------- tags
+
+async function setTag(nodes, tag, on) {
+  await run(async () => {
+    for (const n of nodes) {
+      if (on && !graph.nodeTag(n, tag)) await ops.tag(n, tag);
+      if (!on && graph.nodeTag(n, tag)) await ops.untag(n, tag);
+    }
+  });
+}
+
+/** A new tag (its set asked when there are sets), put on `nodes`. */
+async function newTag(nodes = []) {
+  const name = await ask("New tag", "", "e.g. Planned, mobile, breaking change");
+  if (!name) return;
+  let set = null;
+  if (graph.tagSets.size) {
+    const choice = await pick(`Put "${name}" in a set?`, [
+      ...graph
+        .sortedTagSets()
+        .map((s) => ({ label: s.name, description: s.single ? "One tag per node" : "", value: s.id })),
+      { label: "In no set", value: "-" },
+    ]);
+    if (choice === null) return;
+    set = choice === "-" ? null : choice;
+  }
+  const tag = await run(() => ops.createTag({ name, tag_set: set }));
+  if (tag && nodes.length) await setTag(nodes, tag, true);
+}
+
+const openTagManager = (focus) =>
+  manageTags({
+    graph,
+    ops,
+    run,
+    focus,
+    counts: () => db.tagCounts(),
+    onDeleted: (tag) => setFilter(S.tagFilter.filter((t) => t !== tag)),
+  }).then(() => schedule());
+
+function setFilter(tags) {
+  S.tagFilter = tags;
+  remember();
+  schedule();
+}
+
+const tagActs = {
+  setTag: (nodes, tag, on) => void setTag(nodes, tag, on),
+  filter: (tags) => setFilter(tags),
+  tagColor: (tag, color) => void run(() => ops.updateTag(tag, { color })),
+  manageTags: (focus) => void openTagManager(focus),
+};
+
+function tagPillMenu(node, tag, at) {
+  void showMenu(tagPillItems(graph, node, tag, S.tagFilter, tagActs), at).catch((e) =>
+    layr.ui.notify(e.message, "error"),
+  );
+}
+
+/** The toolbar's Tags button: which tags the view shows only, and managing them. */
+function tagsMenu(at) {
+  const tags = graph.sortedTags();
+  const items = [
+    { label: "Show only nodes tagged…", disabled: true },
+    ...tags.map((t) => ({
+      label: graph.tagSets.get(t.tag_set)?.name ? `${t.name} (${graph.tagSets.get(t.tag_set).name})` : t.name,
+      checked: S.tagFilter.includes(t.id),
+      run: () => setFilter(S.tagFilter.includes(t.id) ? S.tagFilter.filter((x) => x !== t.id) : [...S.tagFilter, t.id]),
+    })),
+    S.tagFilter.length > 0 && "-",
+    S.tagFilter.length > 0 && { label: "Show all nodes again", icon: "filter_alt_off", run: () => setFilter([]) },
+    "-",
+    { label: "Manage tags…", icon: "settings", run: () => void openTagManager() },
+  ].filter(Boolean);
+  void showMenu(items, at).catch((e) => layr.ui.notify(e.message, "error"));
+}
+
+// ---------- links to other plugins
+
+const nodeLink = (node) => layrLink({ plugin: "concepts", kind: "node", id: node });
+const nodeMarkdownLink = (node) => layrMarkdownLink(label(node), { plugin: "concepts", kind: "node", id: node });
+
+/** A layr link clicked in a node's text: nodes and prototypes of this map open here, others where layr opens them. */
+function openLink(href) {
+  const link = parseLayrLink(href);
+  if (link?.plugin === "concepts" && link.kind === "node") return void reveal(link.id).catch(() => {});
+  if (link?.plugin === "concepts" && link.kind === "prototype") return openPrototypes([link.id]);
+  if (typeof layr.links?.open === "function") {
+    return void layr.links.open(href).catch((e) => layr.ui.notify(e.message ?? String(e), "error"));
+  }
+  // An older core: the link's plugin and kind as a panel's params, when it has the panel.
+  void layr.call("links.open", { url: href }).catch(() => layr.ui.notify(`Can't open ${href} in this layr`, "error"));
+}
+
+/** A web link clicked in a node's text: outside layr. */
+const openWeb = (href) => void window.open(href, "_blank", "noopener,noreferrer");
+
+const openPrototypes = (nodes) =>
+  void layr.panels.open("prototypes", { nodes }, { where: "tab" }).catch((e) => layr.ui.notify(e.message, "error"));
+
+async function copyText(text, what = "Link") {
+  try {
+    await navigator.clipboard.writeText(text);
+    layr.ui.notify(`${what} copied`, "success");
+  } catch {
+    await showText(`${what}: press Ctrl+C to copy it`, text);
+  }
+}
+
+/** Call another plugin's tool; its value (structured content unwrapped). */
+const otherTool = (plugin, tool, args = {}) => layr.tools.run(tool, args, { plugin });
+
+/** Link another plugin's item (`thread`: its layr link) to the node: it shows among the node's threads. */
+const linkThread = (node, thread, title) =>
+  run(() =>
+    tables.rpc("mark", {
+      node_ids: [node],
+      thread_key: thread,
+      link: thread,
+      thread_title: title,
+      changed: false,
+      note_text: null,
+      linked: true,
+    }),
+  );
+
+/** A pipeline task's link from its number. */
+const taskLink = (number) => layrLink({ plugin: "pipeline", kind: "task", id: String(number) });
+
+/** A pipeline task made from this node: its description is the node as an outline; linked both ways. */
+async function sendToPipeline(node) {
+  try {
+    const { projects = [] } = (await otherTool("pipeline", "projects")) ?? {};
+    const usable = projects.filter((p) => p.enabled !== false);
+    if (!usable.length) return layr.ui.notify("The pipeline has no project to put a task in: add one there", "error");
+    const projectId =
+      usable.length === 1
+        ? usable[0].projectId ?? usable[0].id
+        : await pick(
+            `Send "${label(node)}" to the pipeline: which project?`,
+            usable.map((p) => ({
+              label: p.title ?? p.name ?? p.projectId,
+              description: p.path ?? "",
+              value: p.projectId ?? p.id,
+            })),
+          );
+    if (!projectId) return;
+    const description = [
+      await readOutline(loader, node, 4000),
+      `This task comes from the concept node #${shortId(node)} in layr's concept map (${nodeLink(node)}); ` +
+        "read more of it with the concepts tools (concepts__read).",
+    ].join("\n\n");
+    const args = { title: label(node), description, projectId, from: [nodeLink(node)] };
+    let result = await otherTool("pipeline", "propose", args);
+    if (!result?.proposed && result?.duplicates?.length) {
+      const choice = await pick(
+        "These tasks look like it",
+        [
+          { label: "Propose it anyway", description: "It is new", value: "new" },
+          ...result.duplicates.map((d) => ({
+            label: `#${d.number} ${d.title}`,
+            description: `${d.column} · link it instead`,
+            value: `task:${d.number}`,
+          })),
+        ],
+        { note: "Link one of them to the node instead, or propose a new task." },
+      );
+      if (!choice) return;
+      if (choice.startsWith("task:")) {
+        const d = result.duplicates.find((x) => String(x.number) === choice.slice(5));
+        await linkThread(node, taskLink(d.number), `#${d.number} ${d.title}`);
+        return layr.ui.notify(`Linked to task #${d.number}`, "success");
+      }
+    }
+    if (!result?.proposed) result = await otherTool("pipeline", "propose", { ...args, confirm: true });
+    if (!result?.proposed) return layr.ui.notify("The pipeline didn't take the task", "error");
+    await linkThread(node, taskLink(result.number), `#${result.number} ${result.title}`);
+    layr.ui.notify(`Task #${result.number} proposed: it shows among this node's threads`, "success");
+    if (S.selected === node) void select(node);
+  } catch (error) {
+    layr.ui.notify(`The pipeline couldn't take it: ${error.message ?? error}`, "error");
+  }
+}
+
+async function linkTask(node) {
+  try {
+    const { tasks = [] } = (await otherTool("pipeline", "tasks", { limit: 300 })) ?? {};
+    const number = await pick(
+      `Link "${label(node)}" to the pipeline task…`,
+      tasks.map((t) => ({ label: `#${t.number} ${t.title}`, description: t.column, value: String(t.number) })),
+      { empty: "The pipeline has no tasks" },
+    );
+    const task = tasks.find((t) => String(t.number) === number);
+    if (!task) return;
+    await linkThread(node, taskLink(task.number), `#${task.number} ${task.title}`);
+    layr.ui.notify(`Linked to task #${task.number}`, "success");
+    if (S.selected === node) void select(node);
+  } catch (error) {
+    layr.ui.notify(`Couldn't read the pipeline's tasks: ${error.message ?? error}`, "error");
+  }
+}
+
+/**
+ * Take a linked task or thread off the node. A thread that also changed or mentioned it stays, as only that; one
+ * that was only linked goes.
+ */
+async function unlink(node) {
+  const rows = (await tables.select(TABLES.threads, { node }).catch(() => [])).filter((t) => t.linked_at);
+  const id = await pick(
+    `Unlink from "${label(node)}"…`,
+    rows.map((t) => ({ label: t.title || "Untitled thread", description: t.href ?? t.thread, value: t.id })),
+    { empty: "Nothing is linked to it" },
+  );
+  const row = rows.find((t) => t.id === id);
+  if (!row) return;
+  await run(async () => {
+    if (row.changed_at || row.mentioned_at) await tables.update(TABLES.threads, { id: row.id }, { linked_at: null });
+    else await tables.delete(TABLES.threads, { id: row.id });
+  });
+  if (S.selected === node) void select(node);
+}
+
+/** The prompt the idea helper starts with (layr_code task #179). */
+const ideaPrompt = (node) =>
+  [
+    `Help me make an idea from ${nodeMarkdownLink(node)}.`,
+    "Read it and what is inside it, find its project node (concepts__project) and search that project's Features",
+    "for the same idea. Ask me, in numbered questions, what you can't tell. Then show me a draft: the area it goes in",
+    "(Inbox when none fits), a short title, a one-sentence description as its first child, and the first spec lines",
+    "(what, why, done when). Add it only after I say yes: tagged Idea and You, with a `leads to` edge from the note.",
+    "Don't move or change the note itself.",
+  ].join(" ");
+
+/**
+ * Ask Claude about a node: a new thread with the node as context, started here (`claude__thread_start`), or the
+ * claude plugin's new-thread form with the text in it. `idea`: the idea helper's prompt.
+ */
+async function askClaude(node, idea = false) {
+  let projects = [];
+  try {
+    projects = (await otherTool("claude", "projects_list"))?.projects ?? [];
+  } catch {
+    // The list can't be read (not allowed yet): the form can still be opened.
+  }
+  const text = idea ? ideaPrompt(node) : `About ${nodeMarkdownLink(node)}: `;
+  const choice = await modal((done) => {
+    const area = h("textarea.layr-textarea", { rows: 6, value: text, dataset: { first: "1" } });
+    const project = h(
+      "select.layr-select",
+      { "aria-label": "Project" },
+      ...projects.map((p) => h("option", { value: p.id ?? p.name }, p.name ?? p.id)),
+    );
+    setTimeout(() => {
+      area.focus();
+      area.setSelectionRange(area.value.length, area.value.length);
+    }, 0);
     return [
-      h("h3.modal-title", `${nodeLabel(graph, from)} → ${nodeLabel(graph, to)}`),
-      h("label.layr-label", "Type"),
-      type,
-      h("label.layr-label", "Label"),
-      label,
+      h("h3.modal-title", idea ? `Make an idea from "${label(node)}"` : `Ask Claude about "${label(node)}"`),
+      h("p.layr-muted.modal-note", "The node goes along as a link; Claude reads it with the concepts tools."),
+      area,
+      projects.length > 0 && h("label.layr-label", "Project"),
+      projects.length > 0 && project,
       h(
         "div.modal-actions",
         h("button.layr-button", { onclick: () => done(null) }, "Cancel"),
-        h("button.layr-button.primary", { onclick: () => done({ type: type.value, label: label.value }) }, "Connect"),
+        h("button.layr-button", { onclick: () => done({ form: true, text: area.value }) }, "Open the new-thread form"),
+        projects.length > 0 &&
+          h(
+            "button.layr-button.primary",
+            { onclick: () => done({ text: area.value, project: project.value }) },
+            "Start the thread",
+          ),
       ),
     ];
   });
   if (!choice) return;
-  let relation = choice.type || undefined;
-  if (relation === "new") {
-    const name = await ask("New edge type", "", "e.g. causes, needs, is a");
-    if (!name) return;
-    relation = await run(() => ops.addEdgeType(name));
-    if (!relation) return;
+  if (choice.form) {
+    await layr.panels
+      .open("threads", { new: true, prompt: choice.text, text: choice.text }, { plugin: "claude" })
+      .catch((e) => layr.ui.notify(`The Claude plugin isn't there: ${e.message}`, "error"));
+    return;
   }
-  await run(() => ops.addEdge(from, to, { relation, label: choice.label }));
-  await refresh();
+  try {
+    const title = idea ? `Idea: ${label(node)}` : label(node);
+    const r = await otherTool("claude", "thread_start", { project: choice.project, prompt: choice.text, title });
+    const id = r?.thread?.id ?? r?.id ?? r?.threadId;
+    if (!id) return;
+    await linkThread(node, layrLink({ plugin: "claude", kind: "thread", id }), title);
+    await layr.panels.open("thread", { thread: id }, { plugin: "claude" }).catch(() => {});
+  } catch (error) {
+    layr.ui.notify(`Claude couldn't start it: ${error.message ?? error}`, "error");
+  }
 }
 
-async function addTag(node, value) {
-  if (value === "new") {
-    const name = await ask("New tag", "", "e.g. Planned, mobile");
-    if (!name) return;
-    const tag = await run(() => ops.createTag({ name }));
-    if (tag) await run(() => ops.tag(node, tag));
-  } else if (value) await run(() => ops.tag(node, value));
+/** Which other plugins' tools this panel may call (feature detection: no tools, no menu items). */
+async function detectPlugins() {
+  const has = async (plugin, tool) => {
+    try {
+      return (await layr.tools.list({ plugin })).some((t) => t.name === tool || t.name === `${plugin}__${tool}`);
+    } catch {
+      return false;
+    }
+  };
+  [S.plugins.pipeline, S.plugins.claude] = await Promise.all([
+    has("pipeline", "propose"),
+    has("claude", "thread_start"),
+  ]);
+  schedule();
 }
+
+// ---------- summaries and pictures
 
 /** The summary dialog; `write`: Claude starts writing it right away (Summarize with Claude in a node's menu). */
 async function editSummary(node, write = false) {
@@ -544,7 +1114,7 @@ async function editSummary(node, write = false) {
     );
     if (write) setTimeout(() => void writeIt(), 0);
     return [
-      h("h3.modal-title", `Summary of "${nodeLabel(graph, node)}"`),
+      h("h3.modal-title", `Summary of "${label(node)}"`),
       area,
       h(
         "div.modal-actions",
@@ -620,11 +1190,6 @@ function schedule() {
   });
 }
 
-/** A region keeps what is typed in it: it isn't rebuilt while one of its fields has focus. */
-const typing = (region) => region.contains(document.activeElement) && document.activeElement.matches("input, textarea");
-
-/** What a region shows, without the `false` and `undefined` of parts left out (replaceChildren would print them). */
-const clean = (parts) => parts.flat(Infinity).filter((p) => p !== null && p !== undefined && p !== false);
 /** How many times the panel was drawn (tests read it, to see it settles). */
 let renders = 0;
 Object.defineProperty(window, "conceptsRenders", { get: () => renders });
@@ -636,38 +1201,31 @@ function render() {
   app.classList.toggle("no-side", !S.side || (narrow() && showDetails));
   app.classList.toggle("with-details", showDetails);
   app.classList.toggle("narrow", narrow());
+  document.body.classList.toggle("connecting", !!S.connecting);
   renders++;
-  const side = $("#side");
-  if (!typing(side)) side.replaceChildren(...clean(renderSide()));
-  const main = $("#main");
-  // A node's text being typed in its row stays, unless typing goes on in another row (S.focus: Enter, Tab…); a new
-  // node being typed in the adder is kept by S.adderText.
-  const active = document.activeElement;
-  const typingText = main.contains(active) && active.isContentEditable;
-  if (!typingText || S.focus) {
-    rebuilding = typingText;
-    try {
-      main.replaceChildren(...clean(renderMain()));
-    } finally {
-      rebuilding = false;
-    }
-  }
+  morphChildren($("#side"), renderSide());
+  morphChildren($("#main"), renderMain());
+  placeEmbeds();
   const details = $("#details");
   details.hidden = !showDetails;
-  if (!details.hidden && !typing(details)) details.replaceChildren(...clean(renderDetails(S.selected)));
+  if (!details.hidden) morphChildren(details, renderDetails(S.selected));
   const root = S.root && graph.node(S.root);
-  void layr.panel.setTitle(root ? `Concepts · ${nodeLabel(graph, S.root)}` : "Concepts").catch(() => {});
+  void layr.panel.setTitle(root ? `Concepts · ${label(S.root)}` : "Concepts").catch(() => {});
+  afterRender();
   if (S.focus) {
     const text = rowText(S.focus);
     S.focus = null;
     if (text) return caretAtEnd(text);
   }
-  const focus = $("[data-autofocus]", main);
+  const focus = $("[data-autofocus]", $("#main"));
   if (focus && document.activeElement !== focus) {
     focus.focus();
     if (focus.select && focus.dataset.autofocus === "select") focus.select();
   }
 }
+
+/** What a region shows, without the `false` and `undefined` of parts left out. */
+const clean = (parts) => parts.flat(Infinity).filter((p) => p !== null && p !== undefined && p !== false);
 
 function renderSide() {
   const search = h("input.layr-input", {
@@ -684,33 +1242,33 @@ function renderSide() {
     timer = setTimeout(async () => {
       const q = S.query.trim();
       S.hits = q ? await db.search(q, 30).catch((e) => (layr.ui.notify(e.message, "error"), [])) : null;
-      renderHits();
+      schedule();
     }, 220);
   };
-  const hits = h("div.hits", { id: "hits" });
-  const renderHits = () => {
-    hits.replaceChildren(
-      ...(S.hits === null
-        ? []
-        : S.hits.length
-          ? S.hits.map((x) =>
-              h(
-                "div.hit",
-                { onclick: () => void reveal(x.id), title: x.path.map((p) => p.text).join(" › ") },
-                h("div.hit-text", firstLine(x.text) || "(empty)"),
-                h("div.hit-path", x.path.map((p) => p.text || "(empty)").join(" › ") || "in no group"),
-              ),
-            )
-          : [h("div.layr-muted.pad-s", "Nothing found")]),
-    );
-  };
-  renderHits();
+  const hits =
+    S.hits === null
+      ? []
+      : S.hits.length
+      ? S.hits.map((x) =>
+          h(
+            "div.hit",
+            { onclick: () => void reveal(x.id), title: x.path.map((p) => p.text).join(" › "), dataset: { key: x.id } },
+            h("div.hit-text", firstLine(x.text) || "(empty)"),
+            h("div.hit-path", x.path.map((p) => p.text || "(empty)").join(" › ") || "in no group"),
+          ),
+        )
+      : [h("div.layr-muted.pad-s", "Nothing found")];
 
   const views = sortedViews();
-  return [
+  return clean([
     h(
       "div.side-head",
-      h("button.layr-button.primary", { onclick: () => void newView(), title: "A new root concept with a view" }, icon("plus", 14), " New view"),
+      h(
+        "button.layr-button.primary",
+        { onclick: () => void newView(), title: "A new root concept with a view" },
+        icon("plus", 14),
+        " New view",
+      ),
       h("span.layr-spacer"),
       iconButton("refresh", "Read everything again", () => void refresh()),
       narrow() &&
@@ -721,7 +1279,7 @@ function renderSide() {
         }),
     ),
     h("div.side-search", search),
-    hits,
+    h("div.hits", { id: "hits" }, hits),
     h(
       "div.side-scroll",
       S.proposals.length > 0 && [
@@ -733,8 +1291,12 @@ function renderSide() {
         ? views.map((v) =>
             h(
               "div.view-row",
-              { class: v.id === S.viewId ? "active" : "", onclick: () => void openView(v.id), dataset: { view: v.id } },
-              h("span.view-title", v.data.name || nodeLabel(graph, v.data.root)),
+              {
+                class: v.id === S.viewId ? "active" : "",
+                onclick: () => void openView(v.id),
+                dataset: { view: v.id, key: v.id },
+              },
+              h("span.view-title", v.data.name || label(v.data.root)),
               v.data.name && h("span.view-of", viewRootLabel(graph, v.data.root)),
               h("span.count", String(graph.childCount(v.data.root) || "")),
             ),
@@ -745,13 +1307,13 @@ function renderSide() {
         ...S.unplaced.nodes.map((n) =>
           h(
             "div.view-row",
-            { onclick: () => void focusRoot(n.id), title: "Show it as the root" },
+            { onclick: () => void focusRoot(n.id), title: "Show it as the root", dataset: { key: n.id } },
             h("span.view-title", n.text || "(empty)"),
           ),
         ),
       ],
     ),
-  ];
+  ]);
 }
 
 function renderProposal(p) {
@@ -761,7 +1323,7 @@ function renderProposal(p) {
   const by = p.changes.find((c) => c.by)?.by;
   return h(
     "div.proposal",
-    { dataset: { proposal: p.id } },
+    { dataset: { proposal: p.id, key: p.id } },
     h("div.proposal-title", p.title),
     by && h("div.proposal-by", `by ${by.title || by.thread}`),
     stopped >= 0 && h("div.proposal-error", `Stopped: ${p.changes[stopped].error}`),
@@ -799,23 +1361,47 @@ function renderProposal(p) {
 }
 
 function renderMain() {
+  const ready = S.mode === "ready" && S.root && graph.node(S.root);
+  const filterNames = S.tagFilter.map((id) => graph.tags.get(id)?.name).filter(Boolean);
   const toolbar = h(
     "div.layr-toolbar.main-bar",
-    iconButton("side", S.side ? "Hide the side" : "Views and proposals", () => {
-      S.side = !S.side;
-      if (S.side && narrow()) S.selected = null;
-      remember();
-      schedule();
-    }, S.side ? ".active" : ""),
-    h("span.bar-title", S.root && graph.node(S.root) ? nodeLabel(graph, S.root) : "Concepts"),
-    h("span.layr-spacer"),
-    S.mode === "ready" &&
-      S.root &&
-      iconButton("summary", S.summaries ? "Hide summaries" : "Show summaries", () => {
-        S.summaries = !S.summaries;
+    { dataset: { key: "bar" } },
+    iconButton(
+      "side",
+      S.side ? "Hide the side" : "Views and proposals",
+      () => {
+        S.side = !S.side;
+        if (S.side && narrow()) S.selected = null;
         remember();
         schedule();
-      }, S.summaries ? ".active" : ""),
+      },
+      S.side ? ".active" : "",
+    ),
+    h("span.bar-title", ready ? label(S.root) : "Concepts"),
+    h("span.layr-spacer"),
+    ready && renderLayoutSwitch(S.root),
+    ready &&
+      h(
+        "button.layr-button.ghost.small.tags-button",
+        {
+          class: filterNames.length ? "active" : "",
+          title: "Show only nodes with some tags, and manage tags",
+          onclick: (e) => tagsMenu(below(e.currentTarget)),
+        },
+        icon("tag", 14),
+        filterNames.length ? ` Only: ${filterNames.join(", ")}` : narrow() ? "" : " Tags",
+      ),
+    ready &&
+      iconButton(
+        "summary",
+        S.summaries ? "Hide summaries" : "Show summaries",
+        () => {
+          S.summaries = !S.summaries;
+          remember();
+          schedule();
+        },
+        S.summaries ? ".active" : "",
+      ),
   );
   if (S.mode === "loading") return [toolbar, h("div.layr-empty", h("span.layr-spinner"), " Loading the concept map…")];
   if (S.mode === "signedOut") {
@@ -839,7 +1425,7 @@ function renderMain() {
       ),
     ];
   }
-  if (!S.root || !graph.node(S.root)) {
+  if (!ready) {
     return [
       toolbar,
       h(
@@ -849,37 +1435,180 @@ function renderMain() {
       ),
     ];
   }
-  return [toolbar, renderHead(S.root), h("div.view-body", { id: "body" }, renderList(S.root))];
+  const free = layoutOf(menuCtx(), S.root) === "free" && graph.childCount(S.root) > 0;
+  return clean([
+    toolbar,
+    renderHead(S.root),
+    S.connecting && renderConnectBar(),
+    S.selection.length > 1 && renderSelectionBar(),
+    h(
+      "div.view-body",
+      {
+        id: "body",
+        class: free ? "canvas" : "",
+        dataset: { key: `body:${S.viewId}:${S.root}` },
+        onclick: (e) => {
+          // A click on nothing in particular clears the selection.
+          if (e.target.closest(".item-head, .edge-chips, .summary, .proto, button, a, .free-item, .canvas-tools"))
+            return;
+          if (!S.selection.length && !S.cursor) return;
+          S.selection = [];
+          S.cursor = null;
+          schedule();
+        },
+      },
+      graph.childCount(S.root) === 0
+        ? h("p.layr-muted.empty-note", "Empty. Press Enter in the title, or Add a node.")
+        : free
+        ? renderCanvas(S.root)
+        : renderList(S.root, [S.root]),
+      !free &&
+        S.adding?.parent !== S.root &&
+        h(
+          "button.add-row",
+          { onclick: () => startAdding(S.root, graph.children(S.root).length) },
+          icon("plus", 14),
+          " Add a node",
+        ),
+      !free && S.adding?.parent === S.root && graph.childCount(S.root) === 0 && renderAdder(S.root),
+    ),
+  ]);
 }
 
-/** The root: the way up to its view's root, its title, tags, summary and edges. */
+/** How a node's children are laid out in this view: three buttons. */
+function renderLayoutSwitch(node) {
+  if (!S.viewId) return null;
+  const now = layoutOf(menuCtx(), node);
+  return h(
+    "span.layout-switch",
+    { title: "How its children are laid out in this view" },
+    Object.entries(LAYOUT_INFO).map(([id, info]) =>
+      h(
+        "button",
+        {
+          class: now === id ? "active" : "",
+          title: `${info.label}: ${info.description}`,
+          "aria-label": info.label,
+          onclick: () => void setLayouts([node], id),
+        },
+        icon(info.icon, 14),
+      ),
+    ),
+  );
+}
+
+function renderConnectBar() {
+  const from = S.connecting.from;
+  return h(
+    "div.connect-bar",
+    { dataset: { key: "connect" } },
+    h(
+      "span",
+      "Click the node to connect ",
+      h("b", from.length > 1 ? `${from.length} nodes` : `"${label(from[0])}"`),
+      " to",
+    ),
+    h("span.layr-spacer"),
+    h(
+      "button.layr-button.small",
+      {
+        onclick: () => {
+          S.connecting = null;
+          void connectBySearch(from);
+        },
+      },
+      "Search…",
+    ),
+    h("button.layr-button.small", { onclick: () => ((S.connecting = null), schedule()) }, "Cancel (Esc)"),
+  );
+}
+
+/** What several selected rows can do, above the view. */
+function renderSelectionBar() {
+  const prototypes = targetNodes().filter((n) => graph.node(n)?.data.prototype);
+  return h(
+    "div.selection-bar",
+    { dataset: { key: "selection" } },
+    h("span.sel-count", `${S.selection.length} selected`),
+    h("button.layr-button.small", { onclick: () => void moveBySearch(targets(), false) }, "Move to…"),
+    h("button.layr-button.small", { onclick: () => void moveBySearch(targets(), true) }, "Also put in…"),
+    h("button.layr-button.small", { onclick: () => startConnecting(targetNodes()) }, "Connect…"),
+    h(
+      "button.layr-button.small",
+      { onclick: (e) => void showMenu(nodeMenuTags(targetNodes()), below(e.currentTarget)) },
+      "Tags…",
+    ),
+    h(
+      "button.layr-button.small",
+      {
+        title: "Select their children instead (closed ones are opened)",
+        onclick: () => void selectRelated(targets(), "children"),
+      },
+      "Children",
+    ),
+    prototypes.length > 1 &&
+      h("button.layr-button.small", { onclick: () => openPrototypes(prototypes) }, "Compare side by side"),
+    h("button.layr-button.small.danger", { onclick: () => void removeRows(targets()) }, "Remove…"),
+    h("span.layr-spacer"),
+    h(
+      "button.layr-button.ghost.icon",
+      {
+        title: "Clear the selection (Esc)",
+        "aria-label": "Clear the selection",
+        onclick: () => selectRelated([], "clear"),
+      },
+      icon("close", 14),
+    ),
+  );
+}
+
+/** The root: the groups it is in, its title, tags, summary, picture or page, and edges. */
 function renderHead(root) {
   const view = S.viewId && graph.views.get(S.viewId);
   const crumbs = [];
-  if (view && view.data.root !== root) {
-    crumbs.push(h("button.crumb", { onclick: () => void focusRoot(view.data.root) }, nodeLabel(graph, view.data.root)));
-    const parent = graph.parents(root)[0]?.data.from;
-    if (parent && parent !== view.data.root && graph.node(parent)) {
-      crumbs.push(h("button.crumb", { onclick: () => void focusRoot(parent) }, nodeLabel(graph, parent)));
-    }
-  }
+  const crumb = (id, text) =>
+    h(
+      "button.crumb",
+      {
+        onclick: () => void focusRoot(id),
+        title: "A group this node is in. Drop a node here to move it into it",
+        dataset: { drop: "into", node: id, key: `crumb:${id}` },
+      },
+      text || "(empty)",
+    );
+  if (view && view.data.root !== root) crumbs.push(crumb(view.data.root, label(view.data.root)));
+  for (const p of S.crumbs) if (p.id !== view?.data.root) crumbs.push(crumb(p.id, firstLine(p.text ?? "")));
   const summary = graph.summary(root);
+  const n = graph.node(root);
   return h(
     "div.view-head",
+    { dataset: { key: `head:${root}` } },
     crumbs.length > 0 && h("div.crumbs", crumbs),
     h(
       "div.root-row",
       {
-        dataset: { node: root },
-        onmousedown: (e) => modifierClick(e) && e.preventDefault(),
-        onclick: (e) => modifierClick(e) && void select(root),
+        dataset: { node: root, drop: "into", own: "", color: n?.data.color ?? "" },
+        class: dimmed(graph, root, S.tagFilter) ? "dimmed" : "",
         oncontextmenu: (e) => rowMenu(e, { node: root, root: true }),
       },
       nodeText(root, "root", "root-text", rootKey),
-      ...tagPills(root),
+      typeBadges(root),
+      tagPills(root),
       view && view.data.name && h("span.layr-badge", view.data.name),
+      h(
+        "span.row-tools",
+        h(
+          "button.icon-button",
+          {
+            title: "More (right-click the title)",
+            onclick: (e) => void nodeMenu({ node: root, root: true }, below(e.currentTarget)),
+          },
+          "⋯",
+        ),
+      ),
     ),
     S.summaries && summary && renderSummary(root, summary),
+    n?.data.prototype && renderProto(root, "root"),
     renderEdgeChips(root),
   );
 }
@@ -887,54 +1616,196 @@ function renderHead(root) {
 function renderSummary(node, summary) {
   return h(
     "div.summary",
-    { class: summary.data.outdated ? "outdated" : "", onclick: () => void editSummary(node), title: "Edit the summary" },
+    {
+      class: summary.data.outdated ? "outdated" : "",
+      onclick: () => void editSummary(node),
+      title: summary.data.outdated
+        ? "Outdated: something inside changed after this summary was written. Click to edit."
+        : "A short version of what is inside. Click to edit.",
+    },
+    summary.data.outdated ? "⚠ " : "",
     summary.data.text,
-    summary.data.outdated ? " (outdated)" : "",
   );
 }
 
-function tagPills(node, onRemove) {
+/** A node's tags as coloured pills; a click opens the tag's menu (switch, take off, filter, colour, edit). */
+function tagPills(node) {
   return graph.tagsOf(node).map((t) =>
     h(
-      "span.tag-pill",
-      { dataset: { color: t.color ?? "gray" }, title: t.description || t.name },
+      "button.tag-pill",
+      {
+        dataset: { color: t.color ?? "gray", tag: t.id },
+        title: [graph.tagSets.get(t.tag_set)?.name, t.description].filter(Boolean).join(": ") || "Tag",
+        onclick: (e) => {
+          e.stopPropagation();
+          tagPillMenu(node, t.id, below(e.currentTarget));
+        },
+      },
       t.name,
-      onRemove && h("button.pill-x", { title: `Take "${t.name}" off`, onclick: () => void onRemove(t.id) }, "×"),
     ),
   );
 }
 
-function renderEdgeChips(node, parent) {
-  const edges = graph.edgesOf(node).filter((e) => !e.data.in || e.data.in === parent);
+/** "is a" edges as `[Type]` badges next to the node. */
+function typeBadges(node) {
+  return edgesHere(graph, node)
+    .filter((e) => isTypeBadge(graph, e, node))
+    .map((e) =>
+      h(
+        "button.type-badge",
+        {
+          title: "is a (click: the edge)",
+          dataset: { edge: e.id },
+          onclick: (ev) => {
+            ev.stopPropagation();
+            edgeMenu(e.id, node, undefined, below(ev.currentTarget));
+          },
+          oncontextmenu: (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            edgeMenu(e.id, node, undefined, ev);
+          },
+        },
+        label(e.data.to),
+      ),
+    );
+}
+
+/**
+ * A node's edges as chips; a click opens the edge's menu, a click on its label (✎ when it has none) types in it.
+ * `drawn`: its group is laid out freely, so edges to its siblings are arrows there and aren't repeated.
+ */
+function renderEdgeChips(node, parent, drawnHere = false) {
+  const edges = edgesHere(graph, node, parent).filter(
+    (e) => !isTypeBadge(graph, e, node) && (!drawnHere || !parent || !graph.membership(parent, otherEnd(e, node))),
+  );
   if (!edges.length) return null;
   return h(
     "div.edge-chips",
-    edges.map((e) => {
-      const out = e.data.from === node;
-      const other = out ? e.data.to : e.data.from;
-      const name = edgeName(graph, e);
-      return h(
-        "button.edge-chip",
-        {
-          class: e.data.in ? "only" : "",
-          title: `${out ? "To" : "From"} ${nodeLabel(graph, other)}${e.data.in ? " (only in this group)" : ""}`,
-          onclick: (ev) => {
-            ev.stopPropagation();
-            if (graph.node(other)) void select(other);
-          },
-        },
-        out ? "→ " : "← ",
-        name && h("span.edge-type", `${name}: `),
-        h("b", nodeLabel(graph, other)),
-      );
-    }),
+    edges.map((e) => edgeChip(e, node, parent)),
   );
 }
 
-function renderList(parent) {
+function edgeChip(e, node, parent) {
+  const out = e.data.from === node;
+  const type = e.data.relation ? label(e.data.relation) : "";
+  const text = e.data.label ?? "";
+  const editing = S.editingEdge === `${e.id} ${node}`;
+  let labelPart;
+  if (editing) {
+    const input = h("input.chip-input", { value: text, placeholder: "label", dataset: { autofocus: "select" } });
+    const save = () => {
+      if (S.editingEdge !== `${e.id} ${node}`) return;
+      S.editingEdge = null;
+      if (input.value.trim() !== text) void run(() => ops.updateEdge(e.id, { label: input.value.trim() }));
+      // Done with it: the chip (kept while its field has the focus) is drawn anew.
+      input.blur();
+      schedule();
+    };
+    input.onclick = (ev) => ev.stopPropagation();
+    input.onkeydown = (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") save();
+      else if (ev.key === "Escape") {
+        S.editingEdge = null;
+        input.blur();
+        schedule();
+      }
+    };
+    input.onblur = save;
+    labelPart = input;
+  } else {
+    labelPart = h(
+      text ? "span.chip-label" : "span.chip-add-label",
+      {
+        title: text ? "Click to edit the label" : "Add a label",
+        onclick: (ev) => {
+          ev.stopPropagation();
+          S.editingEdge = `${e.id} ${node}`;
+          schedule();
+        },
+      },
+      text || "✎",
+    );
+  }
+  const sep = type && (text || editing) ? " · " : " ";
+  return h(
+    "span.edge-chip",
+    {
+      role: "button",
+      class: e.data.in ? "only" : "",
+      dataset: { edge: e.id, from: node, key: `edge:${e.id}`, own: "" },
+      title: e.data.in ? `Only in "${label(e.data.in)}"` : "Holds wherever these nodes are",
+      onclick: (ev) => !editing && edgeMenu(e.id, node, parent, below(ev.currentTarget)),
+      oncontextmenu: (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        edgeMenu(e.id, node, parent, ev);
+      },
+    },
+    out
+      ? [type && h("span.edge-type", type), sep, labelPart, " → ", h("b", label(e.data.to))]
+      : [h("b", label(e.data.from)), " ", type && h("span.edge-type", type), sep, labelPart, " →"],
+  );
+}
+
+/** A prototype's page under its node, folded or not as saved in the view (an island: built once, then updated). */
+function renderProto(node, place) {
+  const l = look(node);
+  const current = { open: !!l?.proto_open, height: l?.proto_h ?? null, zoom: l?.proto_zoom ?? null };
+  const key = `proto:${node}:${place}`;
+  let el = embeds.get(key);
+  if (!el) {
+    el = protoEmbed({
+      ids: [node],
+      name: label(node),
+      look: current,
+      load: loadPrototypePages,
+      openBig: openPrototypes,
+      onLook: ({ open, height, zoom }) => void setLook(node, { proto_open: open, proto_h: height, proto_zoom: zoom }),
+    });
+    el.dataset.key = key;
+    el.dataset.island = key;
+    embeds.set(key, el);
+  } else el.update(current);
+  // The page keeps the embed where morph finds it in its place; elsewhere `placeEmbeds` puts it in this stand-in's.
+  return h("div.proto", { dataset: { island: key, key, standin: "" } });
+}
+
+/** The prototype embeds, by their place: built once, kept while they are on the page. */
+const embeds = new Map();
+/** Each stand-in that morph put on the page (a new place) gets its embed; embeds no longer shown are forgotten. */
+function placeEmbeds() {
+  for (const standin of document.querySelectorAll("#main [data-standin]")) {
+    const el = embeds.get(standin.dataset.island);
+    if (el) standin.replaceWith(el);
+    else standin.remove();
+  }
+  for (const [key, el] of embeds) if (!el.isConnected) embeds.delete(key);
+}
+
+async function loadPrototypePages(ids) {
+  const [nodes, pages] = await Promise.all([
+    tables.select(TABLES.nodes, { id: ids }),
+    tables.select(TABLES.pages, { node: ids }),
+  ]);
+  return ids.flatMap((id) => {
+    const page = pages.find((p) => p.node === id);
+    const text = nodes.find((n) => n.id === id)?.text ?? "";
+    return page ? [{ id, title: firstLine(text) || "Prototype", html: page.html }] : [];
+  });
+}
+
+/** The children of `parent` as its layout in this view says (vertical, horizontal; free: renderFree). */
+function renderList(parent, path) {
+  const layout = layoutOf(menuCtx(), parent);
+  if (layout === "free") return renderFree(parent, path);
   const kids = graph.children(parent);
-  const list = h("div.list");
-  kids.forEach((g) => list.append(renderItem(g, parent)));
+  const list = h("div.list", { class: layout, dataset: { key: `list:${parent}` } });
+  kids.forEach((g, i) => {
+    list.append(gap(parent, i), renderItem(g, parent, path));
+  });
+  list.append(gap(parent, kids.length));
   const total = graph.childCount(parent);
   if (kids.length < total) {
     list.append(
@@ -952,12 +1823,27 @@ function renderList(parent) {
     );
   }
   if (S.adding?.parent === parent) list.append(renderAdder(parent));
-  else if (parent === S.root) {
-    list.append(
-      h("button.add-row", { onclick: () => startAdding(parent, kids.length) }, icon("plus", 14), " Add a node"),
-    );
-  }
   return list;
+}
+
+/** Between two rows: where a dragged row lands; hovering shows ＋ that adds a node there. */
+function gap(parent, index) {
+  return h(
+    "div.gap",
+    { dataset: { key: `gap:${parent}:${index}` } },
+    h(
+      "div.gap-zone",
+      {
+        dataset: { drop: "gap", parent, index: String(index) },
+        title: "Add a node here",
+        onclick: (e) => {
+          e.stopPropagation();
+          void addFresh(parent, index);
+        },
+      },
+      h("span.gap-plus", "＋"),
+    ),
+  );
 }
 
 function startAdding(parent, index) {
@@ -970,7 +1856,7 @@ function renderAdder(parent) {
   const input = h("input.layr-input.adder", {
     placeholder: "New node: Enter adds it, Esc stops",
     value: S.adderText,
-    dataset: { autofocus: "1" },
+    dataset: { autofocus: "1", key: `adder:${parent}` },
   });
   input.oninput = () => (S.adderText = input.value);
   input.onkeydown = async (e) => {
@@ -983,7 +1869,7 @@ function renderAdder(parent) {
       input.value = S.adderText = "";
       const index = S.adding.index;
       S.adding = { parent, index: index + 1 };
-      await addNode(parent, text, index);
+      await run(() => ops.addNewChild(parent, text, index));
     }
   };
   input.onblur = () =>
@@ -995,10 +1881,14 @@ function renderAdder(parent) {
         schedule();
       }
     }, 150);
-  return h("div.adder-row", input);
+  return h("div.adder-row", { dataset: { key: `adder-row:${parent}` } }, input);
 }
 
-function renderItem(g, parent) {
+/**
+ * One child in its group: its row (grip, toggle, text, badges, tags, tools), summary, page, edges, and its children
+ * when it is open. `free`: in a free layout (`order`: its place, when the order counts; `movable`: dragged there).
+ */
+function renderItem(g, parent, path, { free = false, order, movable = false } = {}) {
   const node = g.data.to;
   const n = graph.node(node);
   const count = graph.childCount(node);
@@ -1007,52 +1897,78 @@ function renderItem(g, parent) {
   const places = graph.parentCount(node);
   const threads = graph.threadCount(node);
   const summary = graph.summary(node);
+  const layout = count > 0 ? layoutOf(menuCtx(), node) : "vertical";
   const at = { node, group: g.id, open };
+  const selected = S.selection.includes(g.id);
 
   const head = h(
     "div.item-head",
     {
       class: [
-        S.selected === node ? "selected" : "",
-        S.cursor === g.id ? "cursor" : "",
+        S.selected === node ? "picked" : "",
+        selected ? "selected" : "",
+        S.cursor === g.id && !S.selection.length ? "cursor" : "",
         n?.data.color ? "colored" : "",
+        dimmed(graph, node, S.tagFilter) ? "dimmed" : "",
       ].join(" "),
-      dataset: { node, group: g.id, color: n?.data.color ?? "" },
-      // Ctrl+click: its details (the editor) instead of typing; a click beside the text: the row the keys work on.
-      onmousedown: (e) => modifierClick(e) && e.preventDefault(),
+      dataset: { node, group: g.id, color: n?.data.color ?? "", drop: "into", own: "" },
+      // Ctrl or Shift+click anywhere on the row selects instead of typing; a click beside the text: the keys' row.
+      onmousedown: (e) => several(e) && e.preventDefault(),
       onclick: (e) => {
-        if (e.target.closest("button")) return;
-        if (modifierClick(e)) return void select(node);
+        if (e.target.closest("button, .grip")) return;
+        if (several(e)) return selectClick(g.id, e.shiftKey);
         if (e.target.closest(".node-text")) return;
         S.cursor = g.id;
+        S.selection = [];
         if (document.activeElement?.isContentEditable) document.activeElement.blur();
         schedule();
       },
       oncontextmenu: (e) => rowMenu(e, at),
     },
     h(
+      "span.grip",
+      {
+        class: free ? "" : "hover-only",
+        title:
+          "Drag: move it (between rows, onto a node, onto a group above); Ctrl+drag: put it there too. " +
+          "Click: select it (more rows: add it); double-click: its details",
+        onpointerdown: (e) => (free && movable ? startFreeDrag(e, g.id, parent) : startMove(e, g.id)),
+        ondblclick: () => void select(node),
+      },
+      "⠿",
+    ),
+    free && order !== undefined && h("span.order-badge", String(order)),
+    h(
       "button.toggle",
       {
         class: count ? "" : "invisible",
-        title: open ? "Close" : `Open (${count} inside)`,
+        title: open ? "Close (Alt+click: everything inside)" : `Open (${count} inside; Alt+click: everything inside)`,
         "aria-label": open ? "Close" : "Open",
         onclick: (e) => {
           e.stopPropagation();
-          void toggle(node);
+          void (e.altKey ? openAll([node], !open) : toggle(node));
         },
       },
       open ? "▾" : "▸",
     ),
     nodeText(node, g.id, "node-text", (e, typed) => rowKey(e, typed, g, parent)),
     count > 0 && !open && h("span.inside", String(count)),
-    n?.data.prototype && h("span.badge-icon", { title: "A prototype: its page shows in the details" }, icon("proto", 13)),
+    typeBadges(node),
+    n?.data.prototype && h("span.badge-icon", { title: "A prototype: its page folds out below it" }, icon("proto", 13)),
     n?.data.image && h("span.badge-icon", { title: n.data.caption || "Has a picture" }, icon("picture", 13)),
+    count > 0 &&
+      layout !== "vertical" &&
+      h("span.layout-mark", { title: `${LAYOUT_INFO[layout].label} in this view` }, LAYOUT_INFO[layout].mark),
     places > 1 && h("span.places", { title: `In ${places} groups` }, `×${places}`),
     threads > 0 && h("span.places.threads", { title: "Threads changed, mentioned or linked it" }, `◷${threads}`),
-    ...tagPills(node),
+    tagPills(node),
     h(
       "span.row-tools",
-      h("button.icon-button", { title: "Add a node inside", onclick: (e) => (e.stopPropagation(), void addInside(node)) }, "+"),
+      h(
+        "button.icon-button",
+        { title: "Add a node inside", onclick: (e) => (e.stopPropagation(), void addInside(node)) },
+        "+",
+      ),
       h(
         "button.icon-button",
         {
@@ -1064,15 +1980,22 @@ function renderItem(g, parent) {
     ),
   );
   longPress(head, at);
+  const cycle = path.includes(node);
   return h(
     "div.item",
+    { dataset: { key: g.id } },
     head,
     S.summaries && summary && renderSummary(node, summary),
-    renderEdgeChips(node, parent),
-    open && h("div.item-children", renderList(node)),
-    !open && S.adding?.parent === node && h("div.item-children", renderList(node)),
+    n?.data.prototype && renderProto(node, g.id),
+    renderEdgeChips(node, parent, free),
+    open && cycle && h("div.layr-muted.small.cycle", "↻ shown above"),
+    open && !cycle && h("div.item-children", renderList(node, [...path, node])),
+    !open && S.adding?.parent === node && h("div.item-children", renderList(node, [...path, node])),
   );
 }
+
+/** Ctrl, ⌘ or Shift + click: selecting rows instead of typing in them. */
+const several = (e) => (e.ctrlKey || e.metaKey || e.shiftKey) && e.button === 0;
 
 async function addInside(node) {
   if (S.viewId && !isOpen(node) && graph.childCount(node)) await toggle(node);
@@ -1080,19 +2003,474 @@ async function addInside(node) {
   startAdding(node, graph.children(node).length);
 }
 
+// ---------- free layouts
+
+/** Pan and zoom of the root laid out freely, as this panel left it there. */
+const spotKey = () => `${S.viewId}/${S.root}`;
+const spot = () => S.spots[spotKey()] ?? { x: 0, y: 0, zoom: 1 };
+function setSpot(next) {
+  S.spots[spotKey()] = { x: Math.round(next.x), y: Math.round(next.y), zoom: next.zoom };
+  const keys = Object.keys(S.spots);
+  for (const k of keys.slice(0, Math.max(0, keys.length - 40))) delete S.spots[k];
+  const content = $("#main .canvas-content");
+  if (content) content.style.transform = `translate(${next.x}px, ${next.y}px) scale(${next.zoom})`;
+  const percent = $("#main .canvas-zoom");
+  if (percent) percent.textContent = `${Math.round(next.zoom * 100)}%`;
+  rememberSoon();
+}
+/** The root's canvas zoom (1 when it isn't free): dragging inside it divides by it. */
+const canvasZoom = () => (layoutOf(menuCtx(), S.root) === "free" ? spot().zoom : 1);
+
+/**
+ * The root's children laid out freely, zoomed and panned: drag the background or scroll to pan, Ctrl + scroll (or
+ * pinch) to zoom at the pointer, "Show all" to fit.
+ */
+function renderCanvas(root) {
+  const s = spot();
+  const zoomBy = (factor) => {
+    const area = $("#main .canvas-area");
+    const cur = spot();
+    setSpot(zoomAt(cur, cur.zoom * factor, area.clientWidth / 2, area.clientHeight / 2));
+  };
+  return h(
+    "div.canvas-area",
+    {
+      dataset: { key: `canvas:${root}` },
+      onwheel: (e) => {
+        e.preventDefault();
+        const cur = spot();
+        if (e.ctrlKey || e.metaKey) {
+          const r = e.currentTarget.getBoundingClientRect();
+          setSpot(zoomAt(cur, cur.zoom * Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top));
+        } else setSpot({ ...cur, x: cur.x - e.deltaX, y: cur.y - e.deltaY });
+      },
+      onpointerdown: (e) => startPan(e),
+    },
+    h(
+      "div.canvas-content",
+      { style: `transform: translate(${s.x}px, ${s.y}px) scale(${s.zoom})` },
+      renderFree(root, [root]),
+    ),
+    h(
+      "div.canvas-tools",
+      h("button.icon-button", { title: "Zoom out (Ctrl + scroll)", onclick: () => zoomBy(1 / 1.25) }, "−"),
+      h(
+        "button.icon-button.canvas-zoom",
+        {
+          title: "Actual size",
+          onclick: () => {
+            const area = $("#main .canvas-area");
+            setSpot(zoomAt(spot(), 1, area.clientWidth / 2, area.clientHeight / 2));
+          },
+        },
+        `${Math.round(s.zoom * 100)}%`,
+      ),
+      h("button.icon-button", { title: "Zoom in (Ctrl + scroll)", onclick: () => zoomBy(1.25) }, "+"),
+      h(
+        "button.icon-button.fit",
+        {
+          title: "Show all",
+          onclick: () => {
+            const area = $("#main .canvas-area");
+            const free = $("#main .canvas-content > .free");
+            if (area && free) setSpot(fitAll(free.offsetWidth, free.offsetHeight, area.clientWidth, area.clientHeight));
+          },
+        },
+        icon("fit", 14),
+        " Show all",
+      ),
+    ),
+  );
+}
+
+/** Pointers down on the canvas: one pans, two pinch (zoom at their middle). */
+const pointers = new Map();
+function startPan(e) {
+  const area = e.currentTarget;
+  if (e.target.closest(".free-item, .canvas-tools, button, a, [contenteditable], input")) return;
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  e.preventDefault();
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  area.setPointerCapture?.(e.pointerId);
+  area.classList.add("panning");
+  let last = { pan: spot(), points: new Map(pointers) };
+  const onMove = (ev) => {
+    if (!pointers.has(ev.pointerId)) return;
+    pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    const now = [...pointers.values()];
+    const was = [...last.points.values()];
+    if (now.length >= 2 && was.length >= 2) {
+      const mid = (p) => ({ x: (p[0].x + p[1].x) / 2, y: (p[0].y + p[1].y) / 2 });
+      const dist = (p) => Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) || 1;
+      const r = area.getBoundingClientRect();
+      const [m0, m1] = [mid(was), mid(now)];
+      const zoomed = zoomAt(last.pan, last.pan.zoom * (dist(now) / dist(was)), m0.x - r.left, m0.y - r.top);
+      setSpot({ ...zoomed, x: zoomed.x + m1.x - m0.x, y: zoomed.y + m1.y - m0.y });
+    } else if (now.length === 1 && was.length >= 1) {
+      const [a] = now;
+      const b = last.points.get(ev.pointerId) ?? a;
+      setSpot({ ...last.pan, x: last.pan.x + a.x - b.x, y: last.pan.y + a.y - b.y });
+    }
+    last = { pan: spot(), points: new Map(pointers) };
+  };
+  const onUp = (ev) => {
+    pointers.delete(ev.pointerId);
+    last = { pan: spot(), points: new Map(pointers) };
+    if (pointers.size) return;
+    area.classList.remove("panning");
+    area.removeEventListener("pointermove", onMove);
+    area.removeEventListener("pointerup", onUp);
+    area.removeEventListener("pointercancel", onUp);
+  };
+  if (pointers.size === 1) {
+    area.addEventListener("pointermove", onMove);
+    area.addEventListener("pointerup", onUp);
+    area.addEventListener("pointercancel", onUp);
+  }
+}
+
+/** How the free layout of `parent` arranges its children: automatically (a kind), or by hand (null). */
+const arrangeOf = (parent) => look(parent)?.arrange ?? null;
+
+/** Where a child of a free layout sits: where it was put by hand, else a first place in three columns. */
+function handPos(parent, conn, i) {
+  const l = look(graph.group(conn)?.data.to);
+  const first = firstPlace(i);
+  return { x: l?.x ?? first.x, y: l?.y ?? first.y };
+}
+
+/** Where each child of the free layout of `parent` is drawn (top lefts, by group conn). */
+function freePositions(parent, kids) {
+  const auto = arrangeOf(parent);
+  const made = auto ? S.generated.get(parent) : null;
+  return new Map(kids.map((g, i) => [g.id, made?.get(g.id) ?? handPos(parent, g.id, i)]));
+}
+
+/**
+ * The children of `parent` placed where they were dragged (by hand) or by an automatic arrangement, with the edges
+ * between them and (when it counts) their order drawn as arrows. Below the root they sit in a scroll area of a size
+ * set by dragging its corner, or in an area that grows to fit (`overflow`).
+ */
+function renderFree(parent, path) {
+  if (graph.children(parent).length < Math.min(FREE_MAX, graph.childCount(parent))) void loadAll(parent);
+  const kids = graph.children(parent);
+  const auto = arrangeOf(parent);
+  const movable = !auto || auto === "tidy";
+  const ordered = !graph.node(parent)?.data.unordered;
+  const pos = freePositions(parent, kids);
+  const boxes = new Map(
+    kids.map((g) => {
+      const s = S.sizes.get(g.id);
+      return [g.id, { ...pos.get(g.id), w: s?.w ?? 200, h: s?.h ?? 40 }];
+    }),
+  );
+  const size = areaSize([...boxes.values()]);
+  const marker = `m${parent.slice(0, 8)}`;
+  const at = (node) => boxes.get(graph.membership(parent, node)?.id);
+  const lines = [];
+  if (ordered && useOrderOf(graph, menuCtx(), parent)) {
+    kids.slice(1).forEach((g, i) => {
+      const [a, b] = [boxes.get(kids[i].id), boxes.get(g.id)];
+      const s = segment(a, b);
+      lines.push(
+        h("line.order-line", { x1: s.a.x, y1: s.a.y, x2: s.b.x, y2: s.b.y, "marker-end": `url(#${marker}-o)` }),
+      );
+    });
+  }
+  for (const e of graph.edgesBetween(parent)) {
+    const [a, b] = [at(e.data.from), at(e.data.to)];
+    if (!a || !b) continue;
+    const s = segment(a, b);
+    const name = edgeName(graph, e);
+    lines.push(
+      h(
+        "g",
+        h("line.edge-line", { x1: s.a.x, y1: s.a.y, x2: s.b.x, y2: s.b.y, "marker-end": `url(#${marker}-e)` }),
+        name &&
+          h("text.edge-label", { x: (s.a.x + s.b.x) / 2, y: (s.a.y + s.b.y) / 2 - 4, "text-anchor": "middle" }, name),
+      ),
+    );
+  }
+  const arrow = (id, size, cls) =>
+    h(
+      "marker",
+      { id, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: size, markerHeight: size, orient: "auto" },
+      h("path", { d: "M0,0 L10,5 L0,10 z", class: cls }),
+    );
+  const area = h(
+    "div.free",
+    {
+      class: auto && !S.generated.get(parent) ? "pending" : "",
+      dataset: { drop: "free", parent, key: `free:${parent}` },
+      style: `width: ${size.w}px; height: ${size.h}px`,
+    },
+    h(
+      "svg.free-svg",
+      { width: size.w, height: size.h },
+      h("defs", arrow(`${marker}-o`, 6, "order-head"), arrow(`${marker}-e`, 7, "edge-head")),
+      lines,
+    ),
+    kids.map((g, i) => {
+      const p = pos.get(g.id);
+      const w = look(g.data.to)?.w;
+      return h(
+        "div.free-item",
+        {
+          class: w ? "sized" : "",
+          dataset: { group: g.id, key: `free-item:${g.id}`, color: graph.node(g.data.to)?.data.color ?? "" },
+          style: `left: ${p.x}px; top: ${p.y}px;${w ? ` width: ${w}px;` : ""}`,
+        },
+        renderItem(g, parent, path, { free: true, order: ordered ? i + 1 : undefined, movable }),
+        h("span.width-handle", {
+          title: "Drag to set its width; double-click: as wide as its text",
+          onpointerdown: (e) => startWidthDrag(e, g.id),
+          ondblclick: () => void setLook(g.data.to, { w: null }),
+        }),
+      );
+    }),
+  );
+  if (parent === S.root) return area;
+  const l = look(parent);
+  const grow = l?.overflow === "grow";
+  return h(
+    "div.free-wrap",
+    { dataset: { key: `free-wrap:${parent}` } },
+    h(
+      "div.free-bar",
+      h("button.arrange-button", { title: "Add a node here", onclick: () => void addFresh(parent) }, "＋ Add"),
+      auto && h("span.layr-muted.small", `Arranged: ${auto}`),
+    ),
+    grow
+      ? h("div.free-grow", area)
+      : h(
+          "div.free-scroll",
+          {
+            dataset: { parent },
+            style: `width: ${l?.area_w ?? AREA.w}px; height: ${l?.area_h ?? AREA.h}px`,
+          },
+          h("div.free-scroll-inner", area),
+          h("span.corner-handle", { title: "Drag to resize", onpointerdown: (e) => startAreaDrag(e, parent) }),
+        ),
+  );
+}
+
+/** Follow the pointer from `e`, in the free layout's own pixels (the canvas zoom undone). */
+function follow(e, move, done) {
+  e.preventDefault();
+  e.stopPropagation();
+  const [sx, sy] = [e.clientX, e.clientY];
+  const scale = canvasZoom();
+  const onMove = (ev) => move((ev.clientX - sx) / scale, (ev.clientY - sy) / scale, ev);
+  const onUp = (ev) => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", onUp);
+    done(ev);
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+  window.addEventListener("pointercancel", onUp);
+}
+
+function startWidthDrag(e, conn) {
+  const item = e.currentTarget.closest(".free-item");
+  const start = item.offsetWidth;
+  let w = start;
+  follow(
+    e,
+    (dx) => {
+      w = Math.round(Math.min(WIDTH.max, Math.max(WIDTH.min, start + dx)));
+      item.style.width = `${w}px`;
+    },
+    () => w !== start && void setLook(graph.group(conn)?.data.to, { w }),
+  );
+}
+
+function startAreaDrag(e, parent) {
+  const frame = e.currentTarget.closest(".free-scroll");
+  const shown = { w: frame.offsetWidth, h: frame.offsetHeight };
+  let size = shown;
+  follow(
+    e,
+    (dx, dy) => {
+      size = { w: Math.round(Math.max(AREA_MIN.w, shown.w + dx)), h: Math.round(Math.max(AREA_MIN.h, shown.h + dy)) };
+      frame.style.width = `${size.w}px`;
+      frame.style.height = `${size.h}px`;
+    },
+    () => (size.w !== shown.w || size.h !== shown.h) && void setLook(parent, { area_w: size.w, area_h: size.h }),
+  );
+}
+
+/**
+ * Drag a child of a free layout: where it is put in this layout (saved once dropped), or, dropped on another node,
+ * a list or another free layout, into that group (Ctrl: put there too). Without moving, a click selects it.
+ */
+function startFreeDrag(e, conn, parent) {
+  const item = e.currentTarget.closest(".free-item");
+  const start = { x: parseFloat(item.style.left) || 0, y: parseFloat(item.style.top) || 0 };
+  const grab = targetAt(e.clientX, e.clientY);
+  const offset = grab?.target.kind === "free" ? { x: grab.target.x - start.x, y: grab.target.y - start.y } : null;
+  const scale = canvasZoom();
+  const [sx, sy] = [e.clientX, e.clientY];
+  let here = null;
+  const conns = dragged(conn);
+  dragFrom(e, {
+    label: conns.length > 1 ? `${conns.length} nodes` : label(graph.group(conn)?.data.to),
+    accept: (t) => (t.kind === "free" && t.parent === parent) || acceptMove(graph, conns, t),
+    move: (x, y, t) => {
+      item.classList.add("dragging");
+      // Over its own layout, or over nothing (past the layout's edge): it moves there; over another target: not.
+      if (!t || (t.kind === "free" && t.parent === parent)) {
+        const same = t && offset;
+        here = same
+          ? { x: t.x - offset.x, y: t.y - offset.y }
+          : { x: start.x + (x - sx) / scale, y: start.y + (y - sy) / scale };
+        here = { x: Math.max(0, Math.round(here.x)), y: Math.max(0, Math.round(here.y)) };
+        item.style.left = `${here.x}px`;
+        item.style.top = `${here.y}px`;
+      } else here = null;
+    },
+    end: (dropped, cancelled) => {
+      item.classList.remove("dragging");
+      if (cancelled) {
+        item.style.left = `${start.x}px`;
+        item.style.top = `${start.y}px`;
+        return;
+      }
+      // Let go past the layout's edge: where it was dragged to.
+      if (!dropped && here && conns.length === 1) void setLook(graph.group(conn)?.data.to, { x: here.x, y: here.y });
+    },
+    click: () => selectOnly(conn),
+    drop: (t, copy) => {
+      if (t.kind === "free" && t.parent === parent && here) {
+        if (conns.length > 1)
+          return void dropNodes(
+            conns.filter((c) => c !== conn),
+            t,
+            copy,
+          );
+        return void setLook(graph.group(conn)?.data.to, { x: here.x, y: here.y });
+      }
+      void dropNodes(conns, t, copy);
+    },
+  });
+}
+
+/** Measure free layouts' children; arrange those laid out automatically again when what they depend on changes. */
+const layoutKeys = new Map();
+const observer = new ResizeObserver(() => measureFree());
+function measureFree() {
+  let changed = false;
+  for (const el of document.querySelectorAll("#main .free-item")) {
+    observer.observe(el);
+    const s = { w: el.offsetWidth, h: el.offsetHeight };
+    const old = S.sizes.get(el.dataset.group);
+    if (!old || old.w !== s.w || old.h !== s.h) {
+      S.sizes.set(el.dataset.group, s);
+      changed = true;
+    }
+  }
+  for (const el of document.querySelectorAll("#main .free")) arrangeFree(el.dataset.parent);
+  if (changed) schedule();
+}
+
+/** Arrange the children of `parent` automatically, off the main thread, when their sizes, edges or settings changed. */
+function arrangeFree(parent) {
+  const kind = arrangeOf(parent);
+  if (!kind) {
+    S.generated.delete(parent);
+    layoutKeys.delete(parent);
+    return;
+  }
+  const input = layoutInput(parent, kind, kind === "tidy");
+  if (!input) return;
+  const key = JSON.stringify(input);
+  if (layoutKeys.get(parent) === key) return;
+  layoutKeys.set(parent, key);
+  const kids = graph.children(parent).map((g) => g.id);
+  void layOut(input).then((at) => {
+    if (layoutKeys.get(parent) !== key) return;
+    S.generated.set(parent, new Map(kids.map((id, i) => [id, at[i]])));
+    schedule();
+  });
+}
+
+/** What an arrangement needs: the children's sizes, the edges between them, their order; `fromHand`: where they are. */
+function layoutInput(parent, kind, fromHand = false, now) {
+  const kids = graph.children(parent);
+  if (kids.some((g) => !S.sizes.get(g.id))) return null;
+  const index = new Map(kids.map((g, i) => [g.data.to, i]));
+  const edges = graph.edgesBetween(parent).flatMap((e) => {
+    const [a, z] = [index.get(e.data.from), index.get(e.data.to)];
+    return a !== undefined && z !== undefined ? [[a, z]] : [];
+  });
+  return {
+    arrange: kind,
+    useOrder: useOrderOf(graph, menuCtx(), parent),
+    edges,
+    boxes: kids.map((g, i) => {
+      const s = S.sizes.get(g.id);
+      const at = now?.get(g.id) ?? (fromHand ? handPos(parent, g.id, i) : { x: 0, y: 0 });
+      return { w: step(s.w), h: step(s.h), ...at };
+    }),
+  };
+}
+
+/** Arrange the children of `parent` once and save where they end up: by hand from then on. */
+async function arrangeOnce(parent, kind) {
+  if (!S.viewId) return;
+  await loadAll(parent);
+  const kids = graph.children(parent);
+  const input = layoutInput(parent, kind, false, freePositions(parent, kids));
+  if (!input) return layr.ui.notify("Show it first: open it, laid out freely, then try again", "error");
+  const at = await layOut(input);
+  await run(async () => {
+    await ops.placeAll(
+      S.viewId,
+      kids.map((g, i) => ({ node: g.data.to, ...at[i] })),
+    );
+    if (arrangeOf(parent)) await ops.setLook(S.viewId, parent, { arrange: null });
+  });
+}
+
+function afterRender() {
+  requestAnimationFrame(measureFree);
+}
+
+// ---------- dragging rows
+
+/** The rows a drag of `conn` takes along: the selection when it is part of it, else only it. */
+const dragged = (conn) => (S.selection.includes(conn) && S.selection.length > 1 ? targets() : [conn]);
+
+/** A click on ⠿: that row selected, or, while rows are selected, it joins them or leaves (a phone has no Ctrl). */
+function selectOnly(conn) {
+  if (S.selection.length && !(S.selection.length === 1 && S.selection[0] === conn)) return selectClick(conn, false);
+  S.selection = [conn];
+  S.cursor = conn;
+  S.anchor = conn;
+  schedule();
+}
+
+/** Drag rows from ⠿ (anywhere they aren't placed by hand); a click selects the row. */
+function startMove(e, conn) {
+  const conns = dragged(conn);
+  dragFrom(e, {
+    label: conns.length > 1 ? `${conns.length} nodes` : label(graph.group(conn)?.data.to),
+    accept: (t) => acceptMove(graph, conns, t),
+    drop: (t, copy) => void dropNodes(conns, t, copy),
+    click: () => selectOnly(conn),
+  });
+}
+
 // ---------------------------------------------------------------- typing in a row (as in layr_code's view.tsx)
 
 /** Nodes this panel just made empty for typing (Enter, Ctrl+Enter): one still empty when typing leaves it goes away. */
 const fresh = new Set();
-/** While render() rebuilds the outline: a text losing the focus to that isn't left by the user. */
-let rebuilding = false;
 
 /** The text of the row `key` (a group conn, or "root"). */
 const rowText = (key) => $(key === "root" ? "#main .root-text" : `#main .item-head[data-group="${key}"] .node-text`);
 /** What is typed in a node's text: its lines, without the empty last line the browser keeps after a line break. */
 const textOf = (el) => el.innerText.replace(/\n$/, "");
-/** Ctrl (⌘) + click: a node's details instead of typing in it. */
-const modifierClick = (e) => (e.ctrlKey || e.metaKey) && e.button === 0;
 
 function caretAtEnd(el) {
   el.focus({ preventScroll: true });
@@ -1112,11 +2490,13 @@ function focusRow(key) {
 
 /** A new empty child of `parent` at `index` (none: last), typed in right away. */
 async function addFresh(parent, index) {
+  if (S.viewId && parent !== S.root && graph.childCount(parent) && !isOpen(parent)) await toggle(parent);
   const made = await run(() => ops.addNewChild(parent, "", index));
   if (!made) return;
   fresh.add(made.node);
   S.adding = null;
   focusRow(made.group);
+  return made;
 }
 
 /** A new empty child of `node`, last; the row `group` it shows through opens to show it (Ctrl+Enter). */
@@ -1127,40 +2507,67 @@ async function addChildFresh(node, group) {
   await addFresh(node);
 }
 
+/** Show a node's stored text in its element: Markdown formatted (links as chips), or plain. */
+function showStored(el, text) {
+  const t = (text ?? "").trim();
+  if (hasMarkdown(t)) {
+    el.innerHTML = renderMarkdown(t);
+    el.classList.add("markdown");
+  } else {
+    el.textContent = t;
+    el.classList.remove("markdown");
+  }
+}
+
 /**
  * A node's text in its row (or the root's title), typed in place: a click puts the caret there, and what is typed is
- * saved shortly after typing stops, and when typing leaves it. All of its lines show; links show as their label until
- * it is typed in. `onKey(e, typed)` gets its keys, `typed` = {el, flush, text}.
+ * saved shortly after typing stops, and when typing leaves it. It shows as Markdown until it is typed in (layr links
+ * as chips that open, web links opening outside). `onKey(e, typed)` gets its keys, `typed` = {el, flush, text}.
  */
 function nodeText(node, key, cls, onKey) {
   const stored = () => graph.node(node)?.data.text ?? "";
   const el = h(`div.${cls}`, { contentEditable: "plaintext-only", dataset: { node } });
   el.spellcheck = false;
-  el.textContent = shownText(stored());
+  showStored(el, stored());
   let timer;
-  let pending;
+  let pendingText;
   const flush = () => {
     clearTimeout(timer);
-    if (pending === undefined) return;
-    const text = textToSave(pending, stored());
-    pending = undefined;
+    if (pendingText === undefined) return;
+    const text = textToSave(pendingText, stored());
+    pendingText = undefined;
     if (text !== null && graph.node(node)) void run(() => ops.updateNode(node, { text }));
   };
-  // A right-click on a text that isn't typed in opens the node's menu without putting the caret in it first.
-  el.addEventListener("mousedown", (e) => e.button === 2 && document.activeElement !== el && e.preventDefault());
+  el.addEventListener("mousedown", (e) => {
+    // A link chip or a web link in the text opens instead of putting the caret there.
+    const chip = document.activeElement !== el && e.target.closest("[data-layr-link], a[data-web-link]");
+    if (chip && e.button === 0 && !several(e)) {
+      e.preventDefault();
+      if (chip.dataset.layrLink) openLink(chip.dataset.layrLink);
+      else openWeb(chip.getAttribute("href"));
+      return;
+    }
+    // A right-click on a text that isn't typed in opens the node's menu without putting the caret in it first.
+    if (e.button === 2 && document.activeElement !== el) e.preventDefault();
+  });
+  el.addEventListener("click", (e) => e.target.closest("a") && e.preventDefault());
   el.addEventListener("focus", () => {
     S.editing = key;
-    if (key !== "root") S.cursor = key;
+    if (key !== "root") {
+      S.cursor = key;
+      S.selection = [];
+    }
     if (S.adding && !S.adderText.trim()) S.adding = null;
     const raw = stored();
-    if (el.textContent !== raw) {
-      // Links typed as Markdown: the text as it is stored, the caret at its end (as layr_code did).
+    if (el.classList.contains("markdown") || el.textContent !== raw) {
+      // Typed as it is stored (Markdown, links), the caret at its end (as layr_code did).
+      el.classList.remove("markdown");
       el.textContent = raw;
       setTimeout(() => document.activeElement === el && caretAtEnd(el), 0);
     }
   });
   el.addEventListener("input", () => {
-    pending = textOf(el);
+    pendingText = textOf(el);
     clearTimeout(timer);
     timer = setTimeout(flush, 400);
   });
@@ -1175,8 +2582,8 @@ function nodeText(node, key, cls, onKey) {
   el.addEventListener("blur", (e) => {
     flush();
     if (S.editing === key) S.editing = null;
-    // Rebuilt (Enter, Tab…: typing goes on elsewhere), or another window took the focus (it comes back here).
-    if (rebuilding || !el.isConnected || !document.hasFocus()) return;
+    // Gone (Tab moved it: typing goes on elsewhere), or another window took the focus (it comes back here).
+    if (!el.isConnected || !document.hasFocus()) return;
     const empty = !textOf(el).trim();
     if (fresh.has(node)) {
       // A button on its own row (+, ⋯): it is still being worked on.
@@ -1184,13 +2591,12 @@ function nodeText(node, key, cls, onKey) {
       fresh.delete(node);
       const bare = !graph.childCount(node) && !graph.node(node)?.data.image && graph.parentCount(node) <= 1;
       if (empty && bare) {
-        // Gone from the outline now: typing in another row keeps the outline from being drawn again.
         if (key !== "root") el.closest(".item")?.remove();
         return void run(() => ops.deleteNode(node));
       }
     }
     // Emptied: it keeps its text (Backspace in an empty node deletes it).
-    el.textContent = shownText(stored());
+    showStored(el, stored());
     schedule();
   });
   return el;
@@ -1218,8 +2624,17 @@ async function rowKey(e, { el, flush, text }, g, parent) {
     el.blur();
   } else if (action === "sibling") {
     // Enter in a new node still empty: done adding (it goes away), else a new node below.
-    if (!text && fresh.has(node)) el.blur();
-    else await addFresh(parent, index + 1);
+    if (!text && fresh.has(node)) return el.blur();
+    const made = await addFresh(parent, index + 1);
+    // A new sibling in a free layout by hand goes right below the one Enter was pressed in.
+    if (made && layoutOf(menuCtx(), parent) === "free" && !arrangeOf(parent)) {
+      const item = el.closest(".free-item");
+      if (item) {
+        const x = parseFloat(item.style.left) || 0;
+        const y = (parseFloat(item.style.top) || 0) + item.offsetHeight + 12;
+        void setLook(made.node, { x, y });
+      }
+    }
   } else if (action === "child") {
     await addChildFresh(node, g.id);
   } else if (action === "indent") {
@@ -1259,37 +2674,57 @@ async function rootKey(e, { el, flush }) {
   else await addFresh(S.root, action === "sibling" ? 0 : undefined);
 }
 
-/** Keys on the outline while nothing is typed: walking the rows (the cursor), and what a row's menu does. */
+/** Keys on the outline while nothing is typed: walking and selecting rows, and what a row's menu does. */
 function onViewKey(e) {
-  if (e.defaultPrevented || !$("#modal").hidden || S.mode !== "ready") return;
+  if (e.defaultPrevented || modalOpen() || S.mode !== "ready" || $(".menu-layer")) return;
   const t = e.target;
   if (t.isContentEditable || t.closest?.("input, textarea, select, .side, .details")) return;
   const action = rowAction(e);
   if (!action || (t.closest?.("button") && ["edit", "toggle", "child"].includes(action))) return;
   if (action === "clear") {
-    if (!S.cursor) return;
-    S.cursor = null;
+    if (!S.cursor && !S.selection.length && !S.connecting) return;
+    if (S.connecting) S.connecting = null;
+    else {
+      S.cursor = null;
+      S.selection = [];
+    }
     schedule();
     return e.preventDefault();
   }
-  const rows = [...document.querySelectorAll("#main .item-head[data-group]")];
-  const keys = rows.map((r) => r.dataset.group);
-  const c = keys.includes(S.cursor) ? S.cursor : null;
+  const rows = visibleRows();
+  const c = rows.includes(S.cursor) ? S.cursor : null;
   const go = (key) => {
     if (!key) return;
     S.cursor = key;
+    S.selection = [];
+    S.anchor = key;
     schedule();
-    rows[keys.indexOf(key)]?.scrollIntoView({ block: "nearest" });
+    rowHead(key)?.scrollIntoView({ block: "nearest" });
   };
   if (action === "prev" || action === "next") {
     e.preventDefault();
-    if (!c) return go(keys[action === "next" ? 0 : keys.length - 1]);
-    return go(keys[keys.indexOf(c) + (action === "next" ? 1 : -1)]);
+    if (!c) return go(rows[action === "next" ? 0 : rows.length - 1]);
+    return go(rows[rows.indexOf(c) + (action === "next" ? 1 : -1)]);
+  }
+  if (action === "extend-up" || action === "extend-down") {
+    e.preventDefault();
+    if (!c) return go(rows[action === "extend-down" ? 0 : rows.length - 1]);
+    const next = extendSelection(rows, S.anchor ?? c, c, action === "extend-down" ? 1 : -1);
+    if (!next) return;
+    Object.assign(S, next);
+    schedule();
+    return rowHead(next.cursor)?.scrollIntoView({ block: "nearest" });
+  }
+  if (action === "select-children" || action === "select-parents") {
+    e.preventDefault();
+    const from = targets();
+    if (from.length) void selectRelated(from, action === "select-children" ? "children" : "parents");
+    return;
   }
   const g = c && graph.group(c);
   if (!g) return;
   e.preventDefault();
-  const head = rows[keys.indexOf(c)];
+  const head = rowHead(c);
   const node = g.data.to;
   const count = graph.childCount(node);
   const open = count > 0 && isOpen(node);
@@ -1298,17 +2733,45 @@ function onViewKey(e) {
     else if (open) go(head.parentElement.querySelector(".item-children .item-head[data-group]")?.dataset.group);
   } else if (action === "left") {
     if (open) void toggle(node);
-    else go(head.parentElement.parentElement.closest(".item")?.querySelector(".item-head")?.dataset.group);
+    else go(head.closest(".item-children")?.closest(".item")?.querySelector(".item-head")?.dataset.group);
   } else if (action === "up" || action === "down") void moveBy(c, action === "up" ? -1 : 1);
   else if (action === "child") void addChildFresh(node, c);
   else if (action === "edit") focusRow(c);
+  else if (action === "details") void select(node);
   else if (action === "toggle") count && void toggle(node);
-  else if (action === "remove") void removeFromGroup(c);
+  else if (action === "remove") void removeRows(targets());
+  else if (action === "connect") startConnecting(targetNodes());
+  else if (action === "tags") void showMenu(nodeMenuTags(targetNodes()), below(head));
+  else if (action === "move") void moveBySearch(targets(), false);
   else if (action === "menu") void nodeMenu({ node, group: c, open }, below(head.querySelector(".node-text") ?? head));
 }
 document.addEventListener("keydown", onViewKey);
 
-// ---------------------------------------------------------------- a node's menu
+/** Connecting by clicking: a click on a node (its row, the root's title, a breadcrumb) ends it there. */
+document.addEventListener(
+  "mousedown",
+  (e) => S.connecting && e.target.closest("#main [data-node]") && !e.target.closest(".toggle") && e.preventDefault(),
+  true,
+);
+document.addEventListener(
+  "click",
+  (e) => {
+    const c = S.connecting;
+    if (!c || e.target.closest(".connect-bar, .toggle, .menu-layer")) return;
+    const el = e.target.closest("#main [data-node]");
+    if (!el) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const to = el.dataset.node;
+    if (c.from.includes(to)) return;
+    S.connecting = null;
+    schedule();
+    void connectTo(c.from, to);
+  },
+  true,
+);
+
+// ---------------------------------------------------------------- menus
 
 /** Where a menu opens for an element (a ⋯ button, a row from the keys): below it, at its left edge. */
 const below = (el) => {
@@ -1316,50 +2779,103 @@ const below = (el) => {
   return { x: r.left, y: r.bottom + 2 };
 };
 
-/** What the items of a node's menu (panels/nodemenu.js) do. */
+/** Lay out the children of `nodes` this way in the view. */
+async function setLayouts(nodes, layout) {
+  if (!S.viewId) return;
+  await run(async () => {
+    for (const n of nodes) await ops.setLook(S.viewId, n, { layout });
+  });
+  if (layout === "free") for (const n of nodes) void loadAll(n);
+}
+
+/** What the items of the menus (panels/nodemenu.js) do. */
 const menuActions = {
+  ...edgeActs,
+  ...tagActs,
   edit: (node) => void select(node),
   addInside: (node, group) => void (group ? addChildFresh(node, group) : addFresh(node)),
   addBelow: (group) => {
     const g = graph.group(group);
     if (g) void addFresh(g.data.from, graph.children(g.data.from).findIndex((c) => c.id === group) + 1);
   },
+  putInside: (node, group) => void putInside(node, group),
   toggle: (node) => void toggle(node),
   focusRoot: (node) => void focusRoot(node),
+  protoOpen: (node, open) => void setLook(node, { proto_open: open }),
+  openPrototypes: (nodes) => openPrototypes(nodes),
+  select: (related) => void selectRelated(S.menuPlaces ?? targets(), related),
   summary: (node) => void editSummary(node),
   summarize: (node) => void editSummary(node, true),
-  setTag: (node, tag, on) => void run(() => (on ? ops.tag(node, tag) : ops.untag(node, tag))),
-  newTag: (node) => void addTag(node, "new"),
-  setColor: (node, color) => void run(() => ops.updateNode(node, { color })),
+  newTag: (nodes) => void newTag(nodes),
+  setColor: (nodes, color) =>
+    void run(async () => {
+      for (const n of nodes) if ((graph.node(n)?.data.color ?? null) !== color) await ops.updateNode(n, { color });
+    }),
   setUnordered: (node, unordered) => void run(() => ops.updateNode(node, { unordered })),
-  connect: (node) => void addEdge(node),
+  setLayout: (nodes, layout) => void setLayouts(nodes, layout),
+  arrange: (nodes, kind) =>
+    void run(async () => {
+      for (const n of nodes) await ops.setLook(S.viewId, n, { arrange: kind });
+    }),
+  arrangeOnce: (nodes, kind) =>
+    void (async () => {
+      for (const n of nodes) await arrangeOnce(n, kind);
+    })(),
+  useOrder: (nodes, on) =>
+    void run(async () => {
+      for (const n of nodes) await ops.setLook(S.viewId, n, { use_order: on });
+    }),
+  overflow: (nodes, overflow) =>
+    void run(async () => {
+      for (const n of nodes) await ops.setLook(S.viewId, n, { overflow });
+    }),
+  openAll: (nodes, open) => void openAll(nodes, open),
+  connect: (nodes) => startConnecting(nodes),
   move: (group, delta) => void moveBy(group, delta),
-  moveTo: (group) => void moveTo(group),
-  alsoIn: (node) => void alsoIn(node),
+  moveTo: (conns) => void moveBySearch(conns, false),
+  alsoIn: (node, group) => void alsoIn(node, group),
+  alsoInMany: (conns) => void moveBySearch(conns, true),
+  copyLink: (node, kind) =>
+    void copyText(
+      graph.node(node)?.data.prototype && kind !== "node" ? prototypeLink(label(node), node) : nodeMarkdownLink(node),
+    ),
+  sendToPipeline: (node) => void sendToPipeline(node),
+  linkTask: (node) => void linkTask(node),
+  unlink: (node) => void unlink(node),
+  askClaude: (node) => void askClaude(node),
+  makeIdea: (node) => void askClaude(node, true),
   picture: (node) => choosePicture(node),
   removePicture: (node) => void removePicture(node),
-  takeOut: (group) => void removeFromGroup(group),
+  newViewOf: (node) => void newView(node),
+  renameView: () => void renameView(),
+  takeOut: (conns) => void removeRows(conns),
   delete: (node) => void deleteNode(node),
 };
 
+/** The tags submenu's items for `nodes` (the selection bar's Tags…, the T key). */
+const nodeMenuTags = (nodes) => tagItems(graph, nodes, menuActions);
+
 /**
  * A node's menu at `where` (a mouse event, or {x, y} in the page), drawn by the shell (layr.ui.contextMenu, which runs
- * the picked item). Without the shell's menu (a plain browser) Edit's own action: the node's details.
+ * the picked item), else our own. On one of several selected rows, the menu for all of them.
  */
 async function nodeMenu(at, where) {
-  const items = nodeMenuItems(graph, at, menuActions);
+  const bulk = at.group && S.selection.length > 1 && S.selection.includes(at.group);
+  S.menuPlaces = bulk ? targets() : [at.group ?? null];
+  const items = bulk
+    ? bulkMenuItems(graph, targets(), menuActions, menuCtx())
+    : nodeMenuItems(
+        graph,
+        { ...at, parent: at.root ? undefined : graph.group(at.group)?.data.from },
+        menuActions,
+        menuCtx(),
+      );
   if (!items.length) return;
-  if (typeof layr.ui.contextMenu === "function") {
-    try {
-      await layr.ui.contextMenu(items, where);
-      return;
-    } catch (error) {
-      if (error?.code !== layr.errors.NOT_AVAILABLE) {
-        return void layr.ui.notify(error.message ?? String(error), "error");
-      }
-    }
+  try {
+    await showMenu(items, where);
+  } catch (error) {
+    layr.ui.notify(error.message ?? String(error), "error");
   }
-  void select(at.node);
 }
 
 /**
@@ -1369,6 +2885,7 @@ async function nodeMenu(at, where) {
 function rowMenu(e, at) {
   const t = e.target;
   if (t.isContentEditable && document.activeElement === t) return;
+  if (t.closest(".edge-chip, .type-badge, .tag-pill")) return;
   e.preventDefault();
   if (Date.now() - longPressed < 1000) return;
   void nodeMenu(at, e);
@@ -1384,7 +2901,7 @@ function longPress(head, at) {
   head.addEventListener("pointerdown", (e) => {
     if (e.pointerType !== "touch") return;
     if (e.target.isContentEditable && document.activeElement === e.target) return; // selecting text
-    if (e.target.closest("button")) return;
+    if (e.target.closest("button, .grip")) return;
     start = { x: e.clientX, y: e.clientY };
     cancel();
     timer = setTimeout(() => {
@@ -1430,17 +2947,6 @@ function renderDetails(node) {
     const value = title.value.trim();
     if (value && value !== n.data.text) void run(() => ops.updateNode(node, { text: value }));
   };
-  const tagChoice = h(
-    "select.layr-select.small-select",
-    { "aria-label": "Add a tag" },
-    h("option", { value: "" }, "+ Tag"),
-    ...graph
-      .sortedTags()
-      .filter((t) => !graph.nodeTag(node, t.id))
-      .map((t) => h("option", { value: t.id }, graph.tagSets.get(t.tag_set)?.name ? `${t.name} (${graph.tagSets.get(t.tag_set).name})` : t.name)),
-    h("option", { value: "new" }, "New tag…"),
-  );
-  tagChoice.onchange = () => void addTag(node, tagChoice.value);
   const color = h(
     "select.layr-select.small-select",
     { "aria-label": "Colour" },
@@ -1455,20 +2961,30 @@ function renderDetails(node) {
   const threads = S.threads.get(node) ?? [];
   const html = S.pages.get(node);
 
-  return [
+  return clean([
     h(
       "div.d-head",
       h("span.d-kicker", n.data.prototype ? "Prototype" : "Node"),
       h("span.layr-spacer"),
-      graph.childCount(node) > 0 &&
-        iconButton("open", "Show it as the root", () => void focusRoot(node)),
+      graph.childCount(node) > 0 && iconButton("open", "Show it as the root", () => void focusRoot(node)),
+      iconButton(
+        "more",
+        "More",
+        (e) => void nodeMenu({ node, root: node === S.root, group: here?.id }, below(e.currentTarget)),
+      ),
       iconButton("close", "Close", () => void select(null)),
     ),
     title,
+    hasMarkdown(n.data.text) &&
+      h("div.d-preview.markdown", { innerHTML: renderMarkdown(n.data.text), onclick: previewClick }),
     h(
       "div.d-row",
-      ...tagPills(node, (tag) => run(() => ops.untag(node, tag))),
-      tagChoice,
+      tagPills(node),
+      h(
+        "button.layr-button.small",
+        { onclick: (e) => void showMenu(nodeMenuTags([node]), below(e.currentTarget)) },
+        "+ Tag",
+      ),
     ),
     section(
       "Summary",
@@ -1476,11 +2992,27 @@ function renderDetails(node) {
         ? renderSummary(node, summary)
         : h("button.layr-button.small", { onclick: () => void editSummary(node) }, "Write a summary"),
     ),
-    html !== undefined && section("Page", renderPrototype(node, html)),
+    n.data.prototype &&
+      section(
+        "Page",
+        h(
+          "div.d-actions",
+          S.viewId &&
+            h(
+              "button.layr-button.small",
+              { onclick: () => void setLook(node, { proto_open: !look(node)?.proto_open }) },
+              look(node)?.proto_open ? "Fold it away in the map" : "Show it under the node",
+            ),
+          h("button.layr-button.small", { onclick: () => openPrototypes([node]) }, "Open it big"),
+          html !== undefined && h("span.layr-muted", `${Math.round(html.length / 1000)} k characters`),
+        ),
+      ),
     n.data.image &&
       section(
         "Picture",
-        pic?.url ? h("img.d-picture", { src: pic.url, alt: pic.row.caption || "Picture" }) : h("span.layr-muted", "Loading…"),
+        pic?.url
+          ? h("img.d-picture", { src: pic.url, alt: pic.row.caption || "Picture" })
+          : h("span.layr-muted", "Loading…"),
         pic?.row.caption && h("div.layr-muted", pic.row.caption),
       ),
     section(
@@ -1488,21 +3020,23 @@ function renderDetails(node) {
       edges.length > 0 &&
         h(
           "ul.d-edges",
-          edges.map((e) => {
-            const out = e.data.from === node;
-            const other = out ? e.data.to : e.data.from;
-            const name = edgeName(graph, e);
-            return h(
+          edges.map((e) =>
+            h(
               "li",
-              h("span.edge-dir", out ? "→" : "←"),
-              name && h("span.edge-type", name),
-              h("button.link", { onclick: () => graph.node(other) && void select(other) }, nodeLabel(graph, other)),
-              e.data.in && h("span.layr-muted", `only in ${nodeLabel(graph, e.data.in)}`),
-              h("button.pill-x", { title: "Delete this edge", onclick: () => void run(() => ops.deleteEdge(e.id)) }, "×"),
-            );
-          }),
+              { dataset: { key: e.id } },
+              h(
+                "button.link",
+                {
+                  title: "The edge's menu",
+                  onclick: (ev) => edgeMenu(e.id, node, here?.data.from, below(ev.currentTarget)),
+                },
+                edgeText(graph, e, node),
+              ),
+              e.data.in && h("span.layr-muted", ` only in ${label(e.data.in)}`),
+            ),
+          ),
         ),
-      h("button.layr-button.small", { onclick: () => void addEdge(node) }, "Connect to…"),
+      h("button.layr-button.small", { onclick: () => startConnecting([node]) }, "Connect to…"),
     ),
     section(
       `In ${groups.length} group${groups.length === 1 ? "" : "s"}`,
@@ -1511,7 +3045,11 @@ function renderDetails(node) {
         groups.map((g) =>
           h(
             "li",
-            h("button.link", { onclick: () => void focusRoot(g.data.from) }, graph.node(g.data.from) ? nodeLabel(graph, g.data.from) : "…"),
+            h(
+              "button.link",
+              { onclick: () => void focusRoot(g.data.from) },
+              graph.node(g.data.from) ? label(g.data.from) : "…",
+            ),
           ),
         ),
       ),
@@ -1519,19 +3057,24 @@ function renderDetails(node) {
         "div.d-actions",
         here && iconButton("up", "Move up", () => void moveBy(here.id, -1)),
         here && iconButton("down", "Move down", () => void moveBy(here.id, 1)),
-        here && h("button.layr-button.small", { onclick: () => void moveTo(here.id) }, "Move to…"),
+        here && h("button.layr-button.small", { onclick: () => void moveBySearch([here.id], false) }, "Move to…"),
         h("button.layr-button.small", { onclick: () => void alsoIn(node) }, "Also in…"),
       ),
     ),
-    threads.length > 0 &&
-      section(
-        `Threads · ${threads.length}`,
+    section(
+      `Threads · ${threads.length}`,
+      threads.length > 0 &&
         h(
           "ul.d-threads",
           threads.map((t) =>
             h(
               "li",
-              h("div", t.title || "Untitled thread"),
+              { dataset: { key: t.id } },
+              h(
+                "button.link",
+                { onclick: () => t.href && openLink(t.href), title: t.href ?? "" },
+                t.title || "Untitled thread",
+              ),
               h(
                 "div.layr-muted",
                 [t.linked_at && "linked", t.changed_at && "changed it", t.mentioned_at && "mentioned it"]
@@ -1541,7 +3084,13 @@ function renderDetails(node) {
             ),
           ),
         ),
+      h(
+        "div.d-actions",
+        S.plugins.pipeline &&
+          h("button.layr-button.small", { onclick: () => void sendToPipeline(node) }, "Send to the pipeline…"),
+        S.plugins.claude && h("button.layr-button.small", { onclick: () => void askClaude(node) }, "Ask Claude…"),
       ),
+    ),
     section(
       "More",
       h(
@@ -1563,62 +3112,25 @@ function renderDetails(node) {
       ),
       h(
         "div.d-actions.danger-zone",
-        here && h("button.layr-button.small", { onclick: () => void removeFromGroup(here.id) }, "Take out of this group"),
+        here && h("button.layr-button.small", { onclick: () => void removeRows([here.id]) }, "Take out of this group"),
         h("button.layr-button.small.danger", { onclick: () => void deleteNode(node) }, "Delete everywhere"),
       ),
     ),
-  ];
+  ]);
 }
 
-/** A prototype's page in a locked-down frame: no origin, no network, inline scripts only (links.js). */
-function renderPrototype(node, html) {
-  const style = getComputedStyle(document.documentElement);
-  const names = ["--bg", "--bg-2", "--bg-3", "--fg", "--fg-dim", "--border", "--accent", "--accent-fg", "--danger",
-    "--radius", "--font", "--font-mono"];
-  const theme = Object.fromEntries(names.map((n) => [n, style.getPropertyValue(n).trim()]).filter(([, v]) => v));
-  const mode = document.documentElement.getAttribute("data-theme");
-  if (mode === "dark" || mode === "light") theme["color-scheme"] = mode;
-  const frame = h("iframe.proto-frame", {
-    sandbox: "allow-scripts",
-    title: nodeLabel(graph, node),
-    srcdoc: prototypeDocument(html, theme, layrCss),
-  });
-  const scale = S.zoom / 100;
-  frame.style.transform = `scale(${scale})`;
-  frame.style.width = `${100 / scale}%`;
-  const box = h("div.proto-box", frame);
-  const onMessage = (event) => {
-    if (event.source !== frame.contentWindow) return;
-    const height = event.data?.layrPrototypeHeight;
-    if (typeof height === "number") {
-      frame.style.height = `${Math.min(2000, Math.max(80, Math.ceil(height)))}px`;
-      box.style.height = `${Math.min(2000, Math.max(80, Math.ceil(height))) * scale}px`;
-    }
-  };
-  window.addEventListener("message", onMessage);
-  const zoom = (d) => {
-    S.zoom = Math.min(200, Math.max(25, S.zoom + d));
-    schedule();
-  };
-  return h(
-    "div.proto",
-    h(
-      "div.proto-bar",
-      h("button.layr-button.small", { onclick: () => zoom(-25), title: "Smaller" }, "−"),
-      h("span.layr-muted", `${S.zoom}%`),
-      h("button.layr-button.small", { onclick: () => zoom(25), title: "Larger" }, "+"),
-    ),
-    box,
-  );
+/** A click in the details' Markdown preview: links open. */
+function previewClick(e) {
+  const chip = e.target.closest("[data-layr-link], a[data-web-link]");
+  if (!chip) return;
+  e.preventDefault();
+  if (chip.dataset.layrLink) openLink(chip.dataset.layrLink);
+  else openWeb(chip.getAttribute("href"));
 }
-
-// layr.css for prototype pages, so a suggestion can look like the app (inline: the frame has no origin).
-const layrCss = await fetch("/_layr/layr.css")
-  .then((r) => (r.ok ? r.text() : ""))
-  .catch(() => "");
 
 // ---------------------------------------------------------------- start
 
+await cssReady;
 layr.events.on("concepts:changed", () => {
   clearTimeout(changedTimer);
   changedTimer = setTimeout(() => void refresh(), 400);
@@ -1627,6 +3139,7 @@ let changedTimer;
 layr.events.on("concepts:refresh", () => void refresh());
 document.addEventListener("visibilitychange", () => !document.hidden && S.mode !== "loading" && void refresh());
 window.addEventListener("resize", () => schedule());
+window.addEventListener("pagehide", () => rememberTimer && remember());
 
 async function onParams(params = {}) {
   if (params.newView) await newView();
@@ -1635,14 +3148,15 @@ async function onParams(params = {}) {
     schedule();
     setTimeout(() => $("#search")?.focus(), 50);
   }
-  const reveal_ = params.node ?? params.prototype;
-  if (reveal_) await reveal(reveal_).catch((e) => layr.ui.notify(e.message, "error"));
+  const node = params.node ?? params.prototype;
+  if (node) await reveal(node).catch((e) => layr.ui.notify(e.message, "error"));
 }
 layr.panel.onParams?.((params) => void onParams(params));
 
 render();
 await refresh();
 if (S.selected) void select(S.selected);
+void detectPlugins();
 await onParams(layr.info.params ?? {});
 // For tests: the panel is ready once this is set.
 document.body.dataset.ready = S.mode;

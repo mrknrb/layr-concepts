@@ -27,12 +27,13 @@ function fakeCtx(options = {}) {
         if (id === "pipeline.threads" && options.pipeline) {
           return { projects: [], threads: { [args.threadId]: { taskId: "task-7", number: 7, title: "Login" } } };
         }
-        if (id === "pipeline.tasks" && options.pipeline) {
-          return args?.taskId === "task-7" ? [{ taskId: "task-7", number: 7, title: "Login" }] : [];
-        }
         throw new Error(`No backend handles ${id}`);
       },
     },
+    // The pipeline's `task` tool through the hub: task 7 (layr_code's id "task-7") is there, others aren't.
+    pipeline: options.pipeline
+      ? { task: async (id) => (id === "7" || id === "task-7" ? { number: 7, title: "Login" } : null) }
+      : undefined,
     tables: {
       rpc: async (name, args) => {
         marks.push({ name, ...args });

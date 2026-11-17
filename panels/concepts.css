@@ -280,21 +280,26 @@ body {
 .item-head:hover {
   background: var(--bg-2);
 }
-.item-head.selected {
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
+.item-head.picked {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.item-head.selected,
+.item-head.selected:hover {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 .item-head.colored {
   box-shadow: inset 3px 0 0 var(--node-color);
   background: color-mix(in srgb, var(--node-color) 10%, transparent);
 }
-.item-head[data-color="red"] { --node-color: #e5484d; }
-.item-head[data-color="orange"] { --node-color: #f76b15; }
-.item-head[data-color="yellow"] { --node-color: #e2b100; }
-.item-head[data-color="green"] { --node-color: #30a46c; }
-.item-head[data-color="teal"] { --node-color: #12a594; }
-.item-head[data-color="blue"] { --node-color: #3e8ef7; }
-.item-head[data-color="purple"] { --node-color: #8e4ec6; }
-.item-head[data-color="pink"] { --node-color: #d6409f; }
+[data-color="red"] { --node-color: #e5484d; }
+[data-color="orange"] { --node-color: #f76b15; }
+[data-color="yellow"] { --node-color: #e2b100; }
+[data-color="green"] { --node-color: #30a46c; }
+[data-color="teal"] { --node-color: #12a594; }
+[data-color="blue"] { --node-color: #3e8ef7; }
+[data-color="purple"] { --node-color: #8e4ec6; }
+[data-color="pink"] { --node-color: #d6409f; }
 .toggle {
   background: none;
   border: none;
@@ -709,4 +714,866 @@ body {
 }
 .signed-out h3 {
   margin: 0;
+}
+
+/* ---------- 0.2.0: layouts, selection, dragging, Markdown, prototypes, tags, edges ---------- */
+
+.main-bar .layout-switch {
+  margin-right: 2px;
+}
+.layout-switch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  flex: none;
+}
+.layout-switch button {
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+  padding: 2px 6px;
+  line-height: 0;
+}
+.layout-switch button + button {
+  border-left: 1px solid var(--border);
+}
+.layout-switch button.active {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--fg);
+}
+.tags-button.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.tags-button svg {
+  vertical-align: -2px;
+}
+.layout-mark {
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 20px;
+}
+.root-row .row-tools {
+  opacity: 0.6;
+}
+.root-row:hover .row-tools {
+  opacity: 1;
+}
+.root-row.dimmed .root-text,
+.item-head.dimmed > :not(.row-tools) {
+  opacity: 0.35;
+}
+.item-head.flash {
+  animation: flash 2s ease-out;
+}
+@keyframes flash {
+  0%,
+  30% {
+    background: color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+}
+.cycle {
+  margin-left: 22px;
+}
+.empty-note {
+  margin: 8px 22px;
+}
+
+/* The grip: drag a row (hover to see it in a list; always in a free layout). */
+.grip {
+  flex: none;
+  width: 14px;
+  margin-left: -14px;
+  color: var(--fg-dim);
+  cursor: grab;
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
+  touch-action: none;
+  user-select: none;
+}
+.grip.hover-only {
+  opacity: 0;
+}
+.item-head:hover .grip.hover-only,
+.item-head.selected .grip.hover-only,
+.item-head.cursor .grip.hover-only {
+  opacity: 1;
+}
+.list.vertical > .item,
+.list.horizontal > .item {
+  padding-left: 14px;
+}
+@media (pointer: coarse) {
+  .grip.hover-only {
+    opacity: 0.55;
+  }
+}
+body.dragging,
+body.dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+.drag-ghost {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  max-width: 260px;
+  padding: 3px 8px;
+  border-radius: var(--radius);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drag-ghost.ok {
+  border-color: var(--accent);
+}
+.drop-target {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: -1px;
+}
+.drop-refused {
+  outline: 1px dashed var(--danger);
+}
+
+/* Between two rows: a line to drop on, or ＋ to add a node there. */
+.gap {
+  position: relative;
+  height: 0;
+}
+.gap-zone {
+  position: absolute;
+  inset: -4px 0 -4px 14px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+.gap-plus {
+  display: none;
+  margin-left: -10px;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1;
+}
+.gap-zone:hover {
+  background: linear-gradient(transparent 45%, color-mix(in srgb, var(--accent) 50%, transparent) 45% 55%,
+    transparent 55%);
+}
+.gap-zone:hover .gap-plus {
+  display: block;
+}
+.gap-zone.drop-target {
+  outline: none !important;
+  background: linear-gradient(transparent 35%, var(--accent) 35% 65%, transparent 65%);
+}
+body.dragging .gap-zone {
+  inset: -7px 0 -7px 14px;
+}
+
+/* Horizontal: children side by side, each a column. */
+.list.horizontal {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+.list.horizontal > .item {
+  flex: 0 0 auto;
+  min-width: 160px;
+  max-width: 340px;
+  padding: 4px 6px 4px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+.list.horizontal > .item > .item-head {
+  border-bottom: none;
+}
+.list.horizontal > .gap {
+  height: auto;
+  align-self: stretch;
+  width: 0;
+}
+.list.horizontal > .gap > .gap-zone {
+  inset: 0 -6px;
+}
+.list.horizontal > .gap > .gap-zone:hover {
+  background: linear-gradient(90deg, transparent 40%, color-mix(in srgb, var(--accent) 50%, transparent) 40% 60%,
+    transparent 60%);
+}
+
+/* Markdown in a node's text, until it is typed in. */
+.node-text.markdown,
+.root-text.markdown,
+.d-preview {
+  white-space: normal;
+}
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 0;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+  font-size: 1.1em;
+}
+.root-text.markdown h1,
+.root-text.markdown h2 {
+  font-size: 1em;
+}
+.markdown ul,
+.markdown ol {
+  padding-left: 1.3em;
+}
+.markdown blockquote {
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+  color: var(--fg-dim);
+}
+.markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--bg-3);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+.markdown .codeblock {
+  margin: 2px 0;
+  background: var(--bg-3);
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+.markdown .codeblock pre {
+  margin: 0;
+  padding: 4px 8px;
+}
+.markdown .codeblock code {
+  background: none;
+  padding: 0;
+}
+.codeblock-lang {
+  padding: 2px 8px 0;
+  color: var(--fg-dim);
+  font-size: 10px;
+}
+.markdown a {
+  color: var(--accent);
+  cursor: pointer;
+}
+.link-chip {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--fg) !important;
+  font-size: 0.9em;
+  line-height: 1.5;
+  text-decoration: none;
+}
+.link-chip:hover {
+  border-color: var(--accent);
+}
+.d-preview {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+/* Selection and connecting. */
+.selection-bar,
+.connect-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px 6px 18px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  font-size: 12px;
+}
+.sel-count {
+  font-weight: 600;
+  margin-right: 4px;
+}
+body.connecting #main [data-node] {
+  cursor: crosshair;
+}
+body.connecting #main .item-head:hover,
+body.connecting #main .root-row:hover {
+  outline: 1px dashed var(--accent);
+}
+
+/* Edges: chips (a click: the edge's menu; its label typed in place), "is a" badges. */
+.edge-chip {
+  display: inline-block;
+  vertical-align: top;
+  white-space: nowrap;
+  line-height: 18px;
+}
+.chip-label,
+.chip-add-label {
+  border-radius: 3px;
+  padding: 0 2px;
+}
+.chip-label:hover,
+.chip-add-label:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.chip-add-label {
+  opacity: 0.5;
+}
+.edge-chip:hover .chip-add-label {
+  opacity: 1;
+}
+.chip-input {
+  width: 9em;
+  font: inherit;
+  font-size: 11px;
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.type-badge {
+  flex: none;
+  margin-top: 2px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-3);
+  color: var(--fg-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  line-height: 15px;
+}
+.type-badge::before {
+  content: "[";
+}
+.type-badge::after {
+  content: "]";
+}
+.type-badge:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+button.tag-pill {
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+button.tag-pill:hover {
+  border-color: var(--tag);
+}
+
+/* Free layouts: a canvas for the root (pan, zoom), a scroll area or an area that grows below it. */
+.view-body.canvas {
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+}
+.canvas-area {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+.canvas-area.panning {
+  cursor: grabbing;
+}
+.canvas-content {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+.canvas-tools {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  box-shadow: var(--shadow);
+  cursor: default;
+}
+.canvas-tools .icon-button {
+  font-size: 13px;
+  min-width: 26px;
+}
+.canvas-tools .fit svg {
+  vertical-align: -2px;
+}
+.free {
+  position: relative;
+}
+.free.pending .free-item {
+  opacity: 0.4;
+}
+.free-svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+.edge-line {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+.edge-head {
+  fill: var(--accent);
+}
+.order-line {
+  stroke: var(--fg-dim);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.6;
+}
+.order-head {
+  fill: var(--fg-dim);
+  opacity: 0.6;
+}
+.edge-label {
+  fill: var(--fg-dim);
+  font-size: 11px;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+}
+.free-item {
+  position: absolute;
+  min-width: 80px;
+  max-width: 320px;
+  padding: 4px 8px 4px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.15);
+  cursor: default;
+}
+.free-item.sized {
+  max-width: none;
+}
+.free-item[data-color]:not([data-color=""]) {
+  border-color: var(--node-color);
+}
+.free-item.dragging {
+  pointer-events: none;
+  opacity: 0.8;
+  z-index: 3;
+  box-shadow: var(--shadow);
+}
+.free-item .item-head {
+  border-bottom: none !important;
+}
+.free-item .summary,
+.free-item .edge-chips {
+  margin-left: 0;
+}
+/* In a box, a row's tools float over its top right corner while it is pointed at. */
+.free-item > .item > .item-head > .row-tools {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  border-radius: var(--radius);
+  background: var(--bg-3);
+}
+.order-badge {
+  flex: none;
+  min-width: 16px;
+  margin-top: 2px;
+  border-radius: 999px;
+  background: var(--bg-3);
+  color: var(--fg-dim);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+}
+.width-handle {
+  position: absolute;
+  top: 4px;
+  right: -4px;
+  bottom: 4px;
+  width: 8px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.free-wrap {
+  margin: 2px 0 6px;
+}
+.free-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.arrange-button {
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--fg-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 0 8px;
+}
+.free-scroll {
+  position: relative;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-2) 50%, var(--bg));
+}
+.free-scroll-inner {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+}
+.free-grow {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+.corner-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(135deg, transparent 50%, var(--fg-dim) 50% 58%, transparent 58% 70%,
+    var(--fg-dim) 70% 78%, transparent 78%);
+}
+
+/* A prototype's page under its node. */
+.proto {
+  margin: 2px 0 6px 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+.view-head .proto,
+.free-item .proto {
+  margin-left: 0;
+}
+.proto-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
+.proto-head button {
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+  font: inherit;
+  padding: 0 5px;
+  border-radius: 3px;
+}
+.proto-head button:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.proto-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.proto-zoom {
+  font-variant-numeric: tabular-nums;
+}
+.proto-note {
+  padding: 6px 8px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.proto-body:empty {
+  display: none;
+}
+.proto-board {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 4px 4px;
+}
+.proto-board.fill {
+  height: 100%;
+  padding: 0;
+}
+.proto-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.proto-tabs button {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--fg-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 1px 8px;
+}
+.proto-tabs button.on {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--fg);
+}
+.proto-columns {
+  display: flex;
+  gap: 8px;
+  min-height: 0;
+}
+.proto-board.fill .proto-columns {
+  flex: 1;
+}
+.proto-column {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.proto-column[hidden] {
+  display: none;
+}
+.proto-label {
+  font-size: 12px;
+  padding: 2px 0;
+}
+.proto-page {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.proto-board.fill .proto-page,
+.proto-board.fill .proto-box {
+  flex: 1;
+}
+.proto-board.fill .proto-box {
+  min-height: 0;
+}
+.proto-box {
+  height: 240px;
+}
+.proto-frame {
+  height: 100%;
+  width: 100%;
+}
+.proto-grip {
+  height: 8px;
+  margin-top: -4px;
+  cursor: ns-resize;
+  touch-action: none;
+  position: relative;
+}
+.proto-grip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  width: 36px;
+  height: 3px;
+  margin-left: -18px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.proto-grip:hover::after,
+.proto-grip.resizing::after {
+  background: var(--accent);
+}
+
+/* The Prototypes panel. */
+body.prototypes-panel {
+  overflow: hidden;
+}
+.proto-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+.proto-panel-bar {
+  border-bottom: 1px solid var(--border);
+}
+.proto-panel-body {
+  flex: 1;
+  min-height: 0;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Our own menu, where the shell can't draw one. */
+.menu-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+.menu-box {
+  position: fixed;
+  min-width: 190px;
+  max-width: 320px;
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  box-shadow: var(--shadow);
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+.menu-item:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.menu-item:disabled {
+  color: var(--fg-dim);
+  cursor: default;
+}
+.menu-item.danger {
+  color: var(--danger);
+}
+.menu-check {
+  width: 12px;
+  color: var(--accent);
+}
+.menu-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu-key,
+.menu-arrow {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+.menu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border);
+}
+
+/* Dialogs: wider ones, a picker's active row, the tag manager. */
+.modal.wide {
+  width: min(860px, calc(100vw - 24px));
+  max-height: 80vh;
+}
+.modal-note {
+  margin: 0;
+  font-size: 12px;
+}
+.pick-list li.active {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.tags-manager {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tm-set {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.tm-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.tm-tag,
+.tm-new {
+  padding-left: 12px;
+}
+.tm-tag.focus {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 4px;
+}
+.modal .small-input {
+  width: auto;
+  flex: 1 1 8em;
+  min-width: 6em;
+  height: 26px;
+  font-size: 12px;
+}
+.modal .tm-name {
+  flex: 0 1 10em;
+}
+.modal .small-select {
+  width: auto;
+}
+.tm-count {
+  font-size: 11px;
+  min-width: 4.5em;
+}
+.ai-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Narrow (a phone): rows a little taller for fingers, tools always there. */
+.app.narrow .item-head {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+.app.narrow .row-tools {
+  opacity: 1;
+}
+.app.narrow .view-head,
+.app.narrow .view-body:not(.canvas) {
+  padding-left: 12px;
+  padding-right: 8px;
+}
+.app.narrow .selection-bar .layr-button {
+  padding: 2px 6px;
 }

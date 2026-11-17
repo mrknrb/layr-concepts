@@ -1,7 +1,7 @@
 {
   "id": "concepts",
   "name": "Concepts",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Your concept map: nodes in groups, edges, tags, summaries, prototypes and AI proposals, shared with layr_code.",
   "author": "mrknrb",
   "layr": "^0.1",
@@ -15,7 +15,12 @@
   ],
   "needs": ["pc", "node"],
   "panels": [
-    { "id": "map", "title": "Concepts", "page": "panels/concepts.html", "icon": "hub" }
+    { "id": "map", "title": "Concepts", "page": "panels/concepts.html", "icon": "hub" },
+    { "id": "prototypes", "title": "Prototypes", "page": "panels/prototypes.html", "icon": "web" }
+  ],
+  "links": [
+    { "path": "node", "panel": "map", "param": "node" },
+    { "path": "prototype", "panel": "prototypes", "param": "prototype" }
   ],
   "commands": [
     { "id": "open", "title": "Concepts: Open the concept map", "panel": "map" },
@@ -31,10 +36,6 @@
     { "menu": "Concepts", "command": "refresh", "group": "2" }
   ],
   "keybindings": [{ "key": "ctrl+alt+k", "command": "open" }],
-  "links": [
-    { "path": "node", "panel": "map", "param": "node" },
-    { "path": "prototype", "panel": "map", "param": "prototype" }
-  ],
   "settings": [
     {
       "id": "proposals",
@@ -51,12 +52,12 @@
         "tools": ["guide", "read", "children", "views", "search", "neighbors", "types", "tags", "history",
                   "prototype_page", "image", "edges", "check", "follow", "threads", "project", "nodes", "tagged",
                   "linked_nodes", "thread_nodes", "project_map", "needs", "filed_ideas", "status_nodes"],
-        "defaults": { "plugins": "allow", "agents": "allow" } },
+        "defaults": { "plugins": "allow", "agents": "allow", "plugin:pipeline": "allow", "plugin:claude": "allow" } },
       { "id": "write", "label": "Add to and change your concept maps",
         "tools": ["add", "tag", "define_tag", "prototype", "set_image", "create_view", "update", "summary", "connect",
                   "move", "mention", "file", "link", "relink", "advance_status", "add_lessons", "setup_project_map",
                   "summarize", "drop_nodes", "remove"],
-        "defaults": { "agents": "allow" } },
+        "defaults": { "agents": "allow", "plugin:pipeline": "allow" } },
       { "id": "decide", "label": "Accept or decline proposals", "tools": ["decide", "apply_proposal"],
         "defaults": { "agents": "allow" } }
     ]

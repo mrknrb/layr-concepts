@@ -70,12 +70,14 @@ export function threads(ctx) {
     const title = ctx.claude ? await ctx.claude.threadTitle(id) : null;
     return { thread, href: thread, title };
   }
-  /** A pipeline task by its link, with its title; checks that it exists when the pipeline runs. */
+  /**
+   * A pipeline task by its link, with its title, from the pipeline's `task` tool (`ctx.pipeline`); refused when the
+   * pipeline says there is no such task. Without the pipeline (or not allowed to ask it), no title.
+   */
   async function pipelineTask(link) {
     const id = decodeURIComponent(link.slice(TASK.length));
-    const tasks = await ctx.commands.run("pipeline.tasks", { taskId: id }).catch(() => undefined);
-    const task = tasks?.find((t) => t.taskId === id);
-    if (tasks && !task) throw new Error(`No pipeline task "${id}"`);
+    const task = await ctx.pipeline?.task(id).catch(() => undefined);
+    if (task === null) throw new Error(`No pipeline task "${id}"`);
     return { thread: link, href: link, title: task ? taskTitle(task.number, task.title) : null };
   }
   async function chat(link) {

@@ -177,6 +177,25 @@ export function createContext({ supabase, hub }) {
         }
       },
     },
+    /**
+     * The pipeline's tasks, for task links: `task(id)` gives `{number, title}`, null when the pipeline says there is
+     * no such task, undefined when it can't tell (no pipeline, not allowed to ask, a task id from layr_code). The
+     * pipeline's `task` tool (layr_code had a `pipeline.tasks` command; this layr has none).
+     */
+    pipeline: {
+      async task(id) {
+        const number = Number(id);
+        if (!Number.isInteger(number) || !hub.available) return undefined;
+        const names = await hub.toolNames().catch(() => []);
+        if (!names.includes("pipeline__task")) return undefined;
+        try {
+          const task = await hub.call("pipeline__task", { number });
+          return { number: task?.number ?? number, title: task?.title ?? "" };
+        } catch (error) {
+          return /There is no task|No task/i.test(errorMessage(error)) ? null : undefined;
+        }
+      },
+    },
     mcp: {
       setInstructions(text) {
         instructions = text;

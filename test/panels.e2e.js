@@ -337,7 +337,7 @@ try {
     await page.waitForSelector(".item-head:has-text('Oven temperatures') .tag-pill", { state: "detached" });
   });
 
-  await step("right-click while typing: the browser's menu; without the shell's menu: Edit's action", async () => {
+  await step("right-click while typing: the browser's menu; without the shell's menu: the panel's own", async () => {
     await fakeMenu(null);
     await page.click(".item-head:has-text('Flour types') .node-text");
     await page.evaluate(() => {
@@ -348,12 +348,13 @@ try {
     assert.equal(await page.evaluate(() => window.lastContext), false);
     assert.equal((await menuCalls()).length, 0);
     await page.keyboard.press("Escape");
-    // A plain browser, or a shell without the menu: NOT_AVAILABLE, and the node's details open instead.
+    // A plain browser, or a shell without the menu: NOT_AVAILABLE, and the panel draws the same menu itself.
     await page.evaluate(() => {
       layr.ui.contextMenu = () =>
         Promise.reject(Object.assign(new Error("no shell"), { code: layr.errors.NOT_AVAILABLE }));
     });
     await page.click(".item-head:has-text('Flour types') .node-text", { button: "right" });
+    await page.click(".menu-box .menu-item:has-text('Edit')");
     await page.waitForFunction(() => document.querySelector(".details .d-text")?.value === "Flour types");
   });
 
@@ -451,20 +452,21 @@ try {
     assert.match(read, /Scoring patterns[\s\S]*Steam in the oven/);
   });
 
-  await step("tagging from the details (Ctrl+click opens them)", async () => {
-    await page.click(".item-head:has-text('Steam in the oven') .node-text", { modifiers: ["Control"] });
+  await step("tagging from the details (a double-click on the grip opens them)", async () => {
+    await page.evaluate(() => (window.conceptsOwnMenus = true));
+    await page.dblclick(".item-head:has-text('Steam in the oven') .grip");
     await page.waitForSelector(".details .d-text");
-    const wish = await page.$eval(".details select.small-select", (s) =>
-      [...s.options].find((o) => o.textContent.startsWith("lf-e2e Wish")).value,
-    );
-    await page.selectOption(".details select.small-select", wish);
+    await page.click(".details button:has-text('+ Tag')");
+    await page.click(".menu-item:has-text('lf-e2e Status')");
+    await page.click(".menu-item:has-text('lf-e2e Wish')");
     await page.waitForSelector(".item-head:has-text('Steam in the oven') .tag-pill:has-text('lf-e2e Wish')");
+    await page.evaluate(() => (window.conceptsOwnMenus = false));
   });
 
-  await step("a prototype's page shows live in the details", async () => {
-    await page.click(".item-head:has-text('Timer card') .node-text", { modifiers: ["Control"] });
-    await page.waitForSelector(".details iframe.proto-frame");
-    const frame = page.frameLocator(".details iframe.proto-frame");
+  await step("a prototype's page folds out under its node, live", async () => {
+    await page.click(".item:has(> .item-head:has-text('Timer card')) .proto-fold");
+    await page.waitForSelector(".proto iframe.proto-frame");
+    const frame = page.frameLocator(".proto iframe.proto-frame");
     await frame.locator("text=Countdown for the next fold.").waitFor();
     await sleep(300);
     await page.screenshot({ path: join(SHOTS, "prototype-dark.png") });
@@ -484,7 +486,7 @@ try {
     await page.waitForSelector(".hit:has-text('Rye with caraway')");
     await page.screenshot({ path: join(SHOTS, "search-dark.png") });
     await page.click(".hit:has-text('Rye with caraway')");
-    await page.waitForSelector(".item-head.selected:has-text('Rye with caraway')");
+    await page.waitForSelector(".item-head.picked:has-text('Rye with caraway')");
   });
 
   await step("light theme", async () => {
@@ -518,7 +520,7 @@ try {
 
   await step("deleting a node from the details asks first", async () => {
     await page.setViewportSize({ width: 1180, height: 720 });
-    await page.click(".item-head:has-text('Oven temperatures') .node-text", { modifiers: ["Control"] });
+    await page.dblclick(".item-head:has-text('Oven temperatures') .grip");
     await page.click(".details button:has-text('Delete everywhere')");
     await page.waitForSelector(".modal:has-text('Delete \"Oven temperatures\"?')");
     await page.screenshot({ path: join(SHOTS, "delete-dialog-dark.png") });
