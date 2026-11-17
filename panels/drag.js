@@ -33,33 +33,47 @@ export function markTarget(el, ok = true) {
   el?.classList.toggle("drop-refused", !ok);
 }
 
-/** Scroll what is under the pointer (and the view) while the pointer is near its edge. */
+/** Whether `el` scrolls (asked once per element in a drag: reading styles on every frame made dragging lag). */
+let scrolls = new WeakMap();
+function scrollable(el) {
+  let yes = scrolls.get(el);
+  if (yes === undefined) {
+    const style = getComputedStyle(el);
+    yes = /(auto|scroll)/.test(style.overflowY + style.overflowX) && !el.classList.contains("canvas-area");
+    scrolls.set(el, yes);
+  }
+  return yes;
+}
+
+/** Scroll what is under the pointer (and the view) while the pointer is near its edge; whether anything scrolled. */
 function autoScroll(x, y) {
   const under = document.elementFromPoint(x, y);
   const boxes = new Set();
-  for (let el = under; el && el !== document.body; el = el.parentElement) {
-    const style = getComputedStyle(el);
-    if (/(auto|scroll)/.test(style.overflowY + style.overflowX) && !el.classList.contains("canvas-area")) boxes.add(el);
-  }
+  for (let el = under; el && el !== document.body; el = el.parentElement) if (scrollable(el)) boxes.add(el);
   const body = document.querySelector(".view-body:not(.canvas)");
   if (body) boxes.add(body);
+  let moved = false;
   for (const box of boxes) {
     const r = box.getBoundingClientRect();
     const edge = Math.min(40, r.height / 4, r.width / 4);
+    const [top, left] = [box.scrollTop, box.scrollLeft];
     if (y < r.top + edge && y >= r.top - 20) box.scrollTop -= 14;
     else if (y > r.bottom - edge && y <= r.bottom + 20) box.scrollTop += 14;
     if (x < r.left + edge && x >= r.left - 20) box.scrollLeft -= 14;
     else if (x > r.right - edge && x <= r.right + 20) box.scrollLeft += 14;
+    moved ||= box.scrollTop !== top || box.scrollLeft !== left;
   }
+  return moved;
 }
 
 /**
  * Drag from the pointer-down `e`. Once it moves a few pixels it is a drag: a label follows the pointer and targets
  * light up when `accept` takes them; dropped on one, `drop(target, copy)` runs. Without moving it is a click
- * (`click`). Esc cancels. `move(x, y, target)` hears every move (a free layout shows where the box goes); `end(dropped,
- * cancelled)` hears the end.
+ * (`click`). Esc cancels. `move(x, y, target)` hears every move, right as it happens (a free layout moves the box
+ * there); `quiet(target)` hides the label (a box moved within its own layout needs none); `end(dropped, cancelled)`
+ * hears the end.
  */
-export function dragFrom(e, { label, accept, drop, click, move, end: ended }) {
+export function dragFrom(e, { label, accept, drop, click, move, quiet, end: ended }) {
   if (e.button !== 0) return;
   e.preventDefault();
   e.stopPropagation();
@@ -72,19 +86,20 @@ export function dragFrom(e, { label, accept, drop, click, move, end: ended }) {
   ghost.className = "drag-ghost";
 
   const update = () => {
-    found = targetAt(last.x, last.y);
-    const ok = !!found && accept(found.target);
-    markTarget(found?.el, ok);
-    if (!ok) found = undefined;
+    const at = targetAt(last.x, last.y);
+    const ok = !!at && accept(at.target);
+    found = ok ? at : undefined;
+    const hush = !!quiet?.(found?.target);
+    markTarget(hush ? undefined : at?.el, ok);
     ghost.classList.toggle("ok", ok);
+    ghost.hidden = hush;
     ghost.textContent = `${last.ctrl ? "Also put in: " : ""}${label}`;
-    ghost.style.left = `${last.x + 14}px`;
-    ghost.style.top = `${last.y + 10}px`;
+    ghost.style.transform = `translate(${last.x + 14}px, ${last.y + 10}px)`;
     move?.(last.x, last.y, found?.target);
   };
+  // Each move is shown as it comes; the frames only scroll near the edges (and show what scrolling brought).
   const tick = () => {
-    autoScroll(last.x, last.y);
-    update();
+    if (autoScroll(last.x, last.y)) update();
     frame = requestAnimationFrame(tick);
   };
   const onMove = (ev) => {
@@ -92,10 +107,12 @@ export function dragFrom(e, { label, accept, drop, click, move, end: ended }) {
     if (!started && Math.hypot(last.x - sx, last.y - sy) < 5) return;
     if (!started) {
       started = true;
+      scrolls = new WeakMap();
       document.body.classList.add("dragging");
       document.body.append(ghost);
       frame = requestAnimationFrame(tick);
     }
+    update();
   };
   const onKey = (ev) => {
     if (ev.key === "Escape") {
@@ -106,6 +123,7 @@ export function dragFrom(e, { label, accept, drop, click, move, end: ended }) {
       ended?.(false, true);
     } else if (ev.key === "Control" || ev.key === "Meta") {
       last = { ...last, ctrl: ev.type === "keydown" };
+      if (started) update();
     }
   };
   const finish = () => {

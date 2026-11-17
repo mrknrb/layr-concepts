@@ -73,10 +73,13 @@ const S = {
   tagFilter: Array.isArray(saved.tags) ? saved.tags : [], // tags whose nodes show as usual, the others dimmed
   lastType: saved.lastType ?? null, // the edge type used last: first in the list
   spots: saved.spots ?? {}, // pan and zoom of a root laid out freely, by `<view>/<root>`
+  scrolls: saved.scrolls ?? {}, // where the view and its free layouts' scroll areas were scrolled, by `<view>/<root>`
   views: [],
   proposals: [],
   unplaced: { nodes: [], total: 0 },
   crumbs: [], // the groups the root is in
+  path: [], // one way down to the root, from a view's root or a top node: the groups above it, outermost first
+  back: Array.isArray(saved.back) ? saved.back.slice(-50) : [], // where Back goes: [{view, root}], the last first
   query: "",
   hits: null,
   types: [],
@@ -110,6 +113,8 @@ const remember = () =>
       tags: S.tagFilter,
       lastType: S.lastType,
       spots: S.spots,
+      scrolls: S.scrolls,
+      back: S.back,
     })
     .catch(() => {});
 let rememberTimer;
@@ -188,7 +193,9 @@ async function reload() {
   await need(edgeEnds());
   S.types = (await tables.rpc("types", {})).types ?? [];
   if (S.selected && !graph.node(S.selected)) await need([S.selected]);
-  S.crumbs = S.root ? (await db.where(S.root).catch(() => null))?.parents ?? [] : [];
+  const where = S.root ? await db.where(S.root).catch(() => null) : null;
+  S.crumbs = where?.parents ?? [];
+  S.path = where ? await pathUp(where) : [];
   const rows = new Set(graph.conns.keys());
   S.selection = S.selection.filter((c) => rows.has(c));
   S.mode = "ready";
@@ -294,14 +301,83 @@ async function newView(root) {
   if (view) await openView(view);
 }
 
-async function renameView() {
-  const v = S.viewId && graph.views.get(S.viewId);
+async function renameView(id = S.viewId) {
+  const v = id && graph.views.get(id);
   if (!v) return;
   const name = await ask("Name of this view (empty: no name)", v.data.name ?? "", "", { empty: true });
   if (name !== null) await run(() => ops.updateView(v.id, { name }));
 }
 
+/** Delete a view (asked); its nodes stay. Shown, another view opens. */
+async function deleteView(id = S.viewId) {
+  const v = id && graph.views.get(id);
+  if (!v) return;
+  const name = v.data.name || label(v.data.root);
+  const ok = await confirmIt(`Delete the view "${name}"?`, "Its nodes stay, and so do the other views.", "Delete view");
+  if (!ok) return;
+  await run(() => ops.removeView(id));
+  S.back = S.back.filter((b) => b.view !== id);
+  if (S.viewId !== id) return void schedule();
+  const next = sortedViews()[0];
+  S.viewId = null;
+  S.root = null;
+  if (next) return openView(next.id);
+  remember();
+  await refresh();
+}
+
+/**
+ * One way down to a node, from the top (outermost first), given where it is (`db.where`). The map gives none for a
+ * view's root (and a view's root is what is shown): then up through its first group, as far as there are groups.
+ */
+async function pathUp(where) {
+  if (where.path?.length || !where.parents?.length) return where.path ?? [];
+  const out = [];
+  const seen = new Set([S.root]);
+  let at = where.parents[0];
+  while (at && !seen.has(at.id) && out.length < 30) {
+    seen.add(at.id);
+    out.unshift(at);
+    const up = await db.where(at.id).catch(() => null);
+    if (up?.path?.length) {
+      out.unshift(...up.path.filter((p) => !seen.has(p.id)));
+      break;
+    }
+    at = up?.parents?.[0];
+  }
+  return out;
+}
+
+/** Before showing another view or root: where the panel is now becomes Back's next step. */
+function pushBack(view, root) {
+  if (!S.root || (view === S.viewId && root === S.root)) return;
+  const last = S.back.at(-1);
+  if (last?.view === S.viewId && last?.root === S.root) return;
+  S.back = [...S.back, { view: S.viewId, root: S.root }].slice(-50);
+}
+
+/** Show `root` in the view `view`, saved as its root (as in layr_code: the view opens there next time). */
+async function setRoot(view, root) {
+  const v = view && graph.views.get(view);
+  if (v && root && v.data.root !== root) await run(() => ops.updateView(v.id, { root }));
+  S.viewId = v ? v.id : S.viewId;
+  S.root = root;
+}
+
+/** Back to the view and root shown before (not up: where the panel was); that view's root is set back too. */
+async function goBack() {
+  const prev = S.back.at(-1);
+  if (!prev) return;
+  S.back = S.back.slice(0, -1);
+  await setRoot(prev.view && graph.views.has(prev.view) ? prev.view : S.viewId, prev.root);
+  S.selected = null;
+  clearSelection();
+  remember();
+  await refresh();
+}
+
 async function openView(id) {
+  pushBack(id, graph.views.get(id)?.data.root ?? null);
   S.viewId = id;
   S.root = graph.views.get(id)?.data.root ?? null;
   S.selected = null;
@@ -311,14 +387,85 @@ async function openView(id) {
   await refresh();
 }
 
-/** Show `node` as the root, inside the current view's looks (not saved to the view). */
+/** Show `node` as the root of the view shown, saved with it; Back goes to the root it had. */
 async function focusRoot(node) {
-  S.root = node;
+  pushBack(S.viewId, node);
+  await setRoot(S.viewId, node);
   S.selected = null;
   clearSelection();
   if (narrow()) S.side = false;
   remember();
   await refresh();
+}
+
+/** The groups a node is in (its ×N): choosing one shows it as the root, the node pointed at in it. */
+async function showPlaces(node) {
+  const where = await db.where(node).catch((e) => void layr.ui.notify(e.message, "error"));
+  if (!where) return;
+  const chosen = await pick(
+    `The groups "${label(node)}" is in`,
+    where.parents.map((p) => ({
+      label: firstLine(p.text ?? "") || "(empty)",
+      description: p.id === S.root ? "shown now" : "",
+      value: p.id,
+    })),
+    { empty: "In no group" },
+  );
+  if (!chosen) return;
+  if (chosen !== S.root) await focusRoot(chosen);
+  setTimeout(() => flash(node), 60);
+}
+
+/** What a thread's link is: a pipeline task, a Claude thread, an AI chat. */
+function threadKind(href) {
+  const plugin = parseLayrLink(href ?? "")?.plugin;
+  return plugin === "pipeline" ? "Task" : plugin === "claude" ? "Claude thread" : plugin === "chat" ? "AI chat" : "";
+}
+
+/** The threads that linked, changed or mentioned a node (its ◷N), latest first: choosing one opens it. */
+async function showThreads(node) {
+  const rows = await tables.select(TABLES.threads, { node }).catch((e) => void layr.ui.notify(e.message, "error"));
+  if (!rows) return;
+  rows.sort((a, b) => b.at.localeCompare(a.at));
+  const chosen = await pick(
+    `Threads of "${label(node)}"`,
+    rows.map((t) => ({
+      label: t.title || "Untitled thread",
+      description: [
+        threadKind(t.href),
+        [t.linked_at && "linked", t.changed_at && "changed it", t.mentioned_at && "mentioned it"]
+          .filter(Boolean)
+          .join(", "),
+        new Date(t.at).toLocaleString(),
+        t.note,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      value: t.id,
+    })),
+    { empty: "No threads" },
+  );
+  const row = chosen && rows.find((t) => t.id === chosen);
+  if (row?.href) openLink(row.href);
+}
+
+/** A node's last 20 changes, newest first: what, what it was, when, and whether you or an AI made it. */
+async function showHistory(node) {
+  const changes = await tables
+    .rpc("history", { node_id: node, max_changes: 20 })
+    .catch((e) => void layr.ui.notify(e.message, "error"));
+  if (!changes) return;
+  await pick(
+    `History of "${label(node)}"`,
+    changes.map((ch, i) => ({
+      label: [ch.what, ch.other_text != null ? `"${ch.other_text || "(empty)"}"` : "", ch.was ? `(was: ${ch.was})` : ""]
+        .filter(Boolean)
+        .join(" "),
+      description: `${new Date(ch.at).toLocaleString()} · ${ch.actor === "ai" ? "AI" : "you"}`,
+      value: String(i),
+    })),
+    { empty: "No changes recorded yet" },
+  );
 }
 
 /** Show a node found anywhere: inside a group it is in (a view's root first), selected. */
@@ -338,12 +485,8 @@ async function reveal(node) {
   }
   const parent = where.parents.find((p) => roots.has(p.id))?.id ?? where.parents[0]?.id;
   const view = parent && sortedViews().find((v) => v.data.root === parent);
-  if (view) {
-    S.viewId = view.id;
-    S.root = parent;
-  } else {
-    S.root = parent ?? node;
-  }
+  pushBack(view ? view.id : S.viewId, parent ?? node);
+  await setRoot(view ? view.id : S.viewId, parent ?? node);
   S.selected = parent ? node : null;
   clearSelection();
   remember();
@@ -407,7 +550,7 @@ async function select(node) {
   if (page[0]) S.pages.set(node, page[0].html);
   if (pic[0]) {
     const url = await storage.signedUrl(pic[0].path).catch(() => null);
-    S.pictures.set(node, { row: pic[0], url });
+    S.pictures.set(node, { row: pic[0], url, at: Date.now() });
   } else S.pictures.delete(node);
   schedule();
 }
@@ -1166,6 +1309,120 @@ function choosePicture(node) {
   file.click();
 }
 
+// ---------- pictures in the map (as in layr_code): icon sized under the row, wider by dragging, big on a click
+
+const PICTURE_ICON = 32;
+const PICTURE_WIDTH = { min: 16, max: 1600 };
+const loadingPictures = new Set();
+
+/** Read the pictures of `nodes` not read yet (or whose link is getting old), then draw again. */
+async function loadPictures(nodes) {
+  const old = Date.now() - 50 * 60 * 1000;
+  const want = nodes.filter((n) => !loadingPictures.has(n) && !((S.pictures.get(n)?.at ?? 0) > old));
+  if (!want.length) return;
+  for (const n of want) loadingPictures.add(n);
+  try {
+    const rows = await tables.select(TABLES.images, { node: want });
+    await Promise.all(
+      rows.map(async (row) => {
+        const url = await storage.signedUrl(row.path).catch(() => null);
+        S.pictures.set(row.node, { row, url, at: Date.now() });
+      }),
+    );
+    for (const n of want) {
+      if (!rows.some((r) => r.node === n)) S.pictures.set(n, { row: null, url: null, at: Date.now() });
+    }
+  } catch {
+    // Not now: tried again when the row is drawn again.
+  } finally {
+    for (const n of want) loadingPictures.delete(n);
+  }
+  schedule();
+}
+
+let picturesToLoad = new Set();
+/** A node's picture under its row: icon sized, or as wide as dragged in this view; a click shows it big. */
+function renderPicture(node) {
+  const pic = S.pictures.get(node);
+  if (!pic || Date.now() - pic.at > 50 * 60 * 1000) {
+    if (!picturesToLoad.size)
+      queueMicrotask(() => {
+        const nodes = [...picturesToLoad];
+        picturesToLoad = new Set();
+        void loadPictures(nodes);
+      });
+    picturesToLoad.add(node);
+  }
+  if (!pic?.url) return null;
+  const { width, height, caption } = pic.row;
+  const ratio = width && height ? width / height : 1;
+  const w = look(node)?.pic_w ?? Math.round(PICTURE_ICON * Math.min(1, ratio));
+  const img = h("img", {
+    src: pic.url,
+    alt: caption ?? "",
+    loading: "lazy",
+    style: `width: ${w}px;${width && height ? ` aspect-ratio: ${ratio};` : ""}`,
+  });
+  return h(
+    "figure.node-picture",
+    { dataset: { key: `pic:${node}` } },
+    h(
+      "div.picture-frame",
+      h("button.picture-open", { title: "Open it big", onclick: (e) => (e.stopPropagation(), showBig(pic)) }, img),
+      h("span.picture-handle", {
+        title: "Drag to make it bigger or smaller (double-click: icon sized)",
+        onpointerdown: (e) => startPictureDrag(e, node),
+        ondblclick: (e) => (e.stopPropagation(), void setLook(node, { pic_w: null })),
+      }),
+    ),
+    caption && h("figcaption", caption),
+  );
+}
+
+function startPictureDrag(e, node) {
+  const frame = e.currentTarget.closest(".picture-frame");
+  const img = frame.querySelector("img");
+  const start = img.offsetWidth;
+  let w = start;
+  frame.classList.add("resizing");
+  follow(
+    e,
+    (dx) => {
+      w = Math.round(Math.min(PICTURE_WIDTH.max, Math.max(PICTURE_WIDTH.min, start + dx)));
+      img.style.width = `${w}px`;
+    },
+    () => {
+      frame.classList.remove("resizing");
+      if (w !== start) void setLook(node, { pic_w: w });
+    },
+  );
+}
+
+/** A picture over everything, as big as fits; a click or Esc closes it. */
+function showBig(pic) {
+  const close = () => {
+    layer.remove();
+    window.removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    close();
+  };
+  const layer = h(
+    "div.picture-big",
+    { onclick: close },
+    h(
+      "figure",
+      h("img", { src: pic.url, alt: pic.row.caption ?? "" }),
+      pic.row.caption && h("figcaption", pic.row.caption),
+    ),
+  );
+  window.addEventListener("keydown", onKey, true);
+  document.body.append(layer);
+}
+
 async function removePicture(node) {
   const row = await pictureRow(node).catch(() => undefined);
   if (!row) return;
@@ -1253,6 +1510,15 @@ function renderSide() {
           h(
             "div.hit",
             { onclick: () => void reveal(x.id), title: x.path.map((p) => p.text).join(" › "), dataset: { key: x.id } },
+            h(
+              "button.icon-button.hit-root",
+              {
+                title: "Show it as the root",
+                "aria-label": "Show it as the root",
+                onclick: (e) => (e.stopPropagation(), void focusRoot(x.id)),
+              },
+              icon("open", 13),
+            ),
             h("div.hit-text", firstLine(x.text) || "(empty)"),
             h("div.hit-path", x.path.map((p) => p.text || "(empty)").join(" › ") || "in no group"),
           ),
@@ -1299,6 +1565,27 @@ function renderSide() {
               h("span.view-title", v.data.name || label(v.data.root)),
               v.data.name && h("span.view-of", viewRootLabel(graph, v.data.root)),
               h("span.count", String(graph.childCount(v.data.root) || "")),
+              h(
+                "span.view-tools",
+                h(
+                  "button.icon-button",
+                  {
+                    title: "Rename this view",
+                    "aria-label": "Rename",
+                    onclick: (e) => (e.stopPropagation(), void renameView(v.id)),
+                  },
+                  icon("edit", 13),
+                ),
+                h(
+                  "button.icon-button",
+                  {
+                    title: "Delete this view (its nodes stay)",
+                    "aria-label": "Delete",
+                    onclick: (e) => (e.stopPropagation(), void deleteView(v.id)),
+                  },
+                  icon("trash", 13),
+                ),
+              ),
             ),
           )
         : h("p.layr-muted.pad-s", "No views yet: make one with New view."),
@@ -1446,7 +1733,7 @@ function renderMain() {
       {
         id: "body",
         class: free ? "canvas" : "",
-        dataset: { key: `body:${S.viewId}:${S.root}` },
+        dataset: { key: `body:${S.viewId}:${S.root}`, scroll: "body" },
         onclick: (e) => {
           // A click on nothing in particular clears the selection.
           if (e.target.closest(".item-head, .edge-chips, .summary, .proto, button, a, .free-item, .canvas-tools"))
@@ -1565,19 +1852,39 @@ function renderSelectionBar() {
 /** The root: the groups it is in, its title, tags, summary, picture or page, and edges. */
 function renderHead(root) {
   const view = S.viewId && graph.views.get(S.viewId);
-  const crumbs = [];
-  const crumb = (id, text) =>
+  const crumb = (id, text, cls = "", title = "A group above it: show it as the root. Drop a node here to move it in") =>
     h(
-      "button.crumb",
-      {
-        onclick: () => void focusRoot(id),
-        title: "A group this node is in. Drop a node here to move it into it",
-        dataset: { drop: "into", node: id, key: `crumb:${id}` },
-      },
+      `button.crumb${cls}`,
+      { onclick: () => void focusRoot(id), title, dataset: { drop: "into", node: id, key: `crumb:${cls}${id}` } },
       text || "(empty)",
     );
-  if (view && view.data.root !== root) crumbs.push(crumb(view.data.root, label(view.data.root)));
-  for (const p of S.crumbs) if (p.id !== view?.data.root) crumbs.push(crumb(p.id, firstLine(p.text ?? "")));
+  // The groups above it, outermost first (one way down to it); the view's root first when that way doesn't pass it;
+  // the other groups it is directly in after them.
+  const path = S.path.filter((p) => p.id !== root);
+  const onPath = new Set(path.map((p) => p.id));
+  const home = view && view.data.root !== root && !onPath.has(view.data.root);
+  const others = S.crumbs.filter((p) => !onPath.has(p.id) && p.id !== view?.data.root && p.id !== root);
+  const prev = S.back.at(-1);
+  const crumbs = [
+    prev &&
+      h(
+        "button.icon-button.back",
+        {
+          title: `Back to ${prev.root && graph.node(prev.root) ? label(prev.root) : "where it was before"} (Alt+←)`,
+          "aria-label": "Back",
+          onclick: () => void goBack(),
+        },
+        icon("back", 14),
+      ),
+    home && crumb(view.data.root, label(view.data.root), ".home", "This view's root: show it as the root"),
+    path.map((p) => crumb(p.id, firstLine(p.text ?? ""))),
+    others.length > 0 &&
+      h(
+        "span.crumbs-also",
+        "also in ",
+        others.map((p) => crumb(p.id, firstLine(p.text ?? ""), ".also", "Another group it is in: show it as the root")),
+      ),
+  ].filter(Boolean);
   const summary = graph.summary(root);
   const n = graph.node(root);
   return h(
@@ -1607,6 +1914,7 @@ function renderHead(root) {
         ),
       ),
     ),
+    n?.data.image && renderPicture(root),
     S.summaries && summary && renderSummary(root, summary),
     n?.data.prototype && renderProto(root, "root"),
     renderEdgeChips(root),
@@ -1912,11 +2220,15 @@ function renderItem(g, parent, path, { free = false, order, movable = false } = 
         dimmed(graph, node, S.tagFilter) ? "dimmed" : "",
       ].join(" "),
       dataset: { node, group: g.id, color: n?.data.color ?? "", drop: "into", own: "" },
-      // Ctrl or Shift+click anywhere on the row selects instead of typing; a click beside the text: the keys' row.
-      onmousedown: (e) => several(e) && e.preventDefault(),
+      // Ctrl or Shift+click anywhere on the row selects instead of typing; a click beside the text: the keys' row. In
+      // a free layout a click selects the row (its text too; the innermost row clicked); a click on the text of the
+      // row selected alone types in it.
+      onmousedown: (e) => (several(e) || selectsFirst(e, g.id)) && e.preventDefault(),
       onclick: (e) => {
         if (e.target.closest("button, .grip")) return;
         if (several(e)) return selectClick(g.id, e.shiftKey);
+        if (selectsFirst(e, g.id) || (e.currentTarget.closest(".free") && !e.target.closest(".node-text")))
+          return selectRow(g.id);
         if (e.target.closest(".node-text")) return;
         S.cursor = g.id;
         S.selection = [];
@@ -1955,12 +2267,24 @@ function renderItem(g, parent, path, { free = false, order, movable = false } = 
     count > 0 && !open && h("span.inside", String(count)),
     typeBadges(node),
     n?.data.prototype && h("span.badge-icon", { title: "A prototype: its page folds out below it" }, icon("proto", 13)),
-    n?.data.image && h("span.badge-icon", { title: n.data.caption || "Has a picture" }, icon("picture", 13)),
     count > 0 &&
       layout !== "vertical" &&
       h("span.layout-mark", { title: `${LAYOUT_INFO[layout].label} in this view` }, LAYOUT_INFO[layout].mark),
-    places > 1 && h("span.places", { title: `In ${places} groups` }, `×${places}`),
-    threads > 0 && h("span.places.threads", { title: "Threads changed, mentioned or linked it" }, `◷${threads}`),
+    places > 1 &&
+      h(
+        "button.places",
+        { title: `In ${places} groups: which ones`, onclick: (e) => (e.stopPropagation(), void showPlaces(node)) },
+        `×${places}`,
+      ),
+    threads > 0 &&
+      h(
+        "button.places.threads",
+        {
+          title: "Threads that changed, mentioned or linked it: which ones",
+          onclick: (e) => (e.stopPropagation(), void showThreads(node)),
+        },
+        `◷${threads}`,
+      ),
     tagPills(node),
     h(
       "span.row-tools",
@@ -1985,6 +2309,7 @@ function renderItem(g, parent, path, { free = false, order, movable = false } = 
     "div.item",
     { dataset: { key: g.id } },
     head,
+    n?.data.image && renderPicture(node),
     S.summaries && summary && renderSummary(node, summary),
     n?.data.prototype && renderProto(node, g.id),
     renderEdgeChips(node, parent, free),
@@ -1996,6 +2321,27 @@ function renderItem(g, parent, path, { free = false, order, movable = false } = 
 
 /** Ctrl, ⌘ or Shift + click: selecting rows instead of typing in them. */
 const several = (e) => (e.ctrlKey || e.metaKey || e.shiftKey) && e.button === 0;
+
+/**
+ * A plain click on the row `conn` (its head is `e.currentTarget`) in a free layout selects it before anything else:
+ * unless it is selected alone already (a click on its text then types), or its text is being typed in.
+ */
+function selectsFirst(e, conn) {
+  if (e.button !== 0 || several(e) || S.connecting) return false;
+  const head = e.currentTarget;
+  if (!head.closest(".free") || head.contains(document.activeElement)) return false;
+  if (e.target.closest("button, .grip, [data-layr-link], a[data-web-link]")) return false;
+  return !(S.selection.length === 1 && S.selection[0] === conn);
+}
+
+/** Select the row `conn` alone (what a click does in a free layout). */
+function selectRow(conn) {
+  if (document.activeElement?.isContentEditable) document.activeElement.blur();
+  S.selection = [conn];
+  S.cursor = conn;
+  S.anchor = conn;
+  schedule();
+}
 
 async function addInside(node) {
   if (S.viewId && !isOpen(node) && graph.childCount(node)) await toggle(node);
@@ -2083,19 +2429,27 @@ function renderCanvas(root) {
   );
 }
 
-/** Pointers down on the canvas: one pans, two pinch (zoom at their middle). */
+/**
+ * Pointers down on the canvas: one pans, two pinch (zoom at their middle). The window hears the moves, as in
+ * layr_code: in layr's Windows web views (input forwarded by the app) pointer capture loses the drag.
+ */
 const pointers = new Map();
+let panEnd = null;
 function startPan(e) {
   const area = e.currentTarget;
   if (e.target.closest(".free-item, .canvas-tools, button, a, [contenteditable], input")) return;
   if (e.pointerType === "mouse" && e.button !== 0) return;
   e.preventDefault();
+  // A mouse is one pointer: a pan whose release was missed (let go outside the panel) ends here.
+  if (e.pointerType === "mouse") panEnd?.();
+  if (!panEnd) pointers.clear();
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  area.setPointerCapture?.(e.pointerId);
   area.classList.add("panning");
+  document.body.classList.add("panning");
   let last = { pan: spot(), points: new Map(pointers) };
   const onMove = (ev) => {
     if (!pointers.has(ev.pointerId)) return;
+    if (ev.pointerType === "mouse" && !(ev.buttons & 1)) return end(); // let go where the panel didn't hear it
     pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
     const now = [...pointers.values()];
     const was = [...last.points.values()];
@@ -2114,18 +2468,24 @@ function startPan(e) {
     last = { pan: spot(), points: new Map(pointers) };
   };
   const onUp = (ev) => {
-    pointers.delete(ev.pointerId);
+    if (!pointers.delete(ev.pointerId)) return;
     last = { pan: spot(), points: new Map(pointers) };
-    if (pointers.size) return;
+    if (!pointers.size) end();
+  };
+  const end = () => {
+    pointers.clear();
+    panEnd = null;
     area.classList.remove("panning");
-    area.removeEventListener("pointermove", onMove);
-    area.removeEventListener("pointerup", onUp);
-    area.removeEventListener("pointercancel", onUp);
+    document.body.classList.remove("panning");
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", onUp);
   };
   if (pointers.size === 1) {
-    area.addEventListener("pointermove", onMove);
-    area.addEventListener("pointerup", onUp);
-    area.addEventListener("pointercancel", onUp);
+    panEnd = end;
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
   }
 }
 
@@ -2158,6 +2518,7 @@ function renderFree(parent, path) {
   const movable = !auto || auto === "tidy";
   const ordered = !graph.node(parent)?.data.unordered;
   const pos = freePositions(parent, kids);
+  if (freeDrag?.parent === parent && pos.has(freeDrag.conn)) pos.set(freeDrag.conn, { x: freeDrag.x, y: freeDrag.y });
   const boxes = new Map(
     kids.map((g) => {
       const s = S.sizes.get(g.id);
@@ -2173,7 +2534,14 @@ function renderFree(parent, path) {
       const [a, b] = [boxes.get(kids[i].id), boxes.get(g.id)];
       const s = segment(a, b);
       lines.push(
-        h("line.order-line", { x1: s.a.x, y1: s.a.y, x2: s.b.x, y2: s.b.y, "marker-end": `url(#${marker}-o)` }),
+        h("line.order-line", {
+          x1: s.a.x,
+          y1: s.a.y,
+          x2: s.b.x,
+          y2: s.b.y,
+          "marker-end": `url(#${marker}-o)`,
+          dataset: { a: kids[i].id, b: g.id },
+        }),
       );
     });
   }
@@ -2182,9 +2550,11 @@ function renderFree(parent, path) {
     if (!a || !b) continue;
     const s = segment(a, b);
     const name = edgeName(graph, e);
+    const ends = { a: graph.membership(parent, e.data.from).id, b: graph.membership(parent, e.data.to).id };
     lines.push(
       h(
         "g",
+        { dataset: ends },
         h("line.edge-line", { x1: s.a.x, y1: s.a.y, x2: s.b.x, y2: s.b.y, "marker-end": `url(#${marker}-e)` }),
         name &&
           h("text.edge-label", { x: (s.a.x + s.b.x) / 2, y: (s.a.y + s.b.y) / 2 - 4, "text-anchor": "middle" }, name),
@@ -2212,13 +2582,19 @@ function renderFree(parent, path) {
     ),
     kids.map((g, i) => {
       const p = pos.get(g.id);
-      const w = look(g.data.to)?.w;
+      const w = look(g.data.to)?.w ?? (freeDrag?.conn === g.id ? freeDrag.w : undefined);
       return h(
         "div.free-item",
         {
-          class: w ? "sized" : "",
+          class: `${w ? "sized" : ""} ${freeDrag?.conn === g.id ? "dragging" : ""}`.trim(),
           dataset: { group: g.id, key: `free-item:${g.id}`, color: graph.node(g.data.to)?.data.color ?? "" },
           style: `left: ${p.x}px; top: ${p.y}px;${w ? ` width: ${w}px;` : ""}`,
+          // A click in the box beside its rows selects it.
+          onclick: (e) => {
+            const inner =
+              ".item-head, button, a, input, textarea, [contenteditable], .width-handle, .edge-chip, .proto, .node-picture";
+            if (e.button === 0 && !several(e) && !S.connecting && !e.target.closest(inner)) selectRow(g.id);
+          },
         },
         renderItem(g, parent, path, { free: true, order: ordered ? i + 1 : undefined, movable }),
         h("span.width-handle", {
@@ -2248,7 +2624,7 @@ function renderFree(parent, path) {
             dataset: { parent },
             style: `width: ${l?.area_w ?? AREA.w}px; height: ${l?.area_h ?? AREA.h}px`,
           },
-          h("div.free-scroll-inner", area),
+          h("div.free-scroll-inner", { dataset: { scroll: parent } }, area),
           h("span.corner-handle", { title: "Drag to resize", onpointerdown: (e) => startAreaDrag(e, parent) }),
         ),
   );
@@ -2301,42 +2677,77 @@ function startAreaDrag(e, parent) {
   );
 }
 
+/** The child of a free layout being dragged: where it is drawn meanwhile (a render on the way keeps it there). */
+let freeDrag = null;
+
+/** Draw the lines of a free layout (its element `area`) that touch the child `conn` where its box is now. */
+function redrawLines(area, conn) {
+  const box = (id) => {
+    const el = area.querySelector(`:scope > .free-item[data-group="${CSS.escape(id)}"]`);
+    if (!el) return null;
+    const s = S.sizes.get(id);
+    return { x: parseFloat(el.style.left) || 0, y: parseFloat(el.style.top) || 0, w: s?.w ?? 200, h: s?.h ?? 40 };
+  };
+  const id = CSS.escape(conn);
+  for (const line of area.querySelectorAll(`:scope > svg [data-a="${id}"], :scope > svg [data-b="${id}"]`)) {
+    const [a, b] = [box(line.dataset.a), box(line.dataset.b)];
+    if (!a || !b) continue;
+    const s = segment(a, b);
+    const l = line.tagName === "line" ? line : line.querySelector("line");
+    for (const [k, v] of Object.entries({ x1: s.a.x, y1: s.a.y, x2: s.b.x, y2: s.b.y })) l?.setAttribute(k, v);
+    const text = line.querySelector?.("text");
+    text?.setAttribute("x", (s.a.x + s.b.x) / 2);
+    text?.setAttribute("y", (s.a.y + s.b.y) / 2 - 4);
+  }
+}
+
 /**
  * Drag a child of a free layout: where it is put in this layout (saved once dropped), or, dropped on another node,
- * a list or another free layout, into that group (Ctrl: put there too). Without moving, a click selects it.
+ * a list or another free layout, into that group (Ctrl: put there too). Without moving, a click selects it. The box
+ * follows each move right away (as in layr_code), keeping its width, with its lines.
  */
 function startFreeDrag(e, conn, parent) {
   const item = e.currentTarget.closest(".free-item");
+  const area = item.parentElement;
   const start = { x: parseFloat(item.style.left) || 0, y: parseFloat(item.style.top) || 0 };
+  const startWidth = item.style.width;
   const grab = targetAt(e.clientX, e.clientY);
   const offset = grab?.target.kind === "free" ? { x: grab.target.x - start.x, y: grab.target.y - start.y } : null;
   const scale = canvasZoom();
   const [sx, sy] = [e.clientX, e.clientY];
   let here = null;
   const conns = dragged(conn);
+  const own = (t) => !t || (t.kind === "free" && t.parent === parent);
+  const put = (p) => {
+    item.style.left = `${p.x}px`;
+    item.style.top = `${p.y}px`;
+    redrawLines(area, conn);
+  };
   dragFrom(e, {
     label: conns.length > 1 ? `${conns.length} nodes` : label(graph.group(conn)?.data.to),
     accept: (t) => (t.kind === "free" && t.parent === parent) || acceptMove(graph, conns, t),
+    quiet: (t) => conns.length === 1 && own(t),
     move: (x, y, t) => {
-      item.classList.add("dragging");
-      // Over its own layout, or over nothing (past the layout's edge): it moves there; over another target: not.
-      if (!t || (t.kind === "free" && t.parent === parent)) {
-        const same = t && offset;
-        here = same
+      if (!freeDrag) {
+        // Its width stays as it is: near the layout's right edge a box would otherwise get narrower as it moves.
+        freeDrag = { conn, parent, ...start, w: item.offsetWidth };
+        item.style.width = `${freeDrag.w}px`;
+        item.classList.add("dragging");
+      }
+      // It follows the pointer everywhere (as in layr_code); over another node or group the label says it goes there.
+      const p =
+        t?.kind === "free" && t.parent === parent && offset
           ? { x: t.x - offset.x, y: t.y - offset.y }
           : { x: start.x + (x - sx) / scale, y: start.y + (y - sy) / scale };
-        here = { x: Math.max(0, Math.round(here.x)), y: Math.max(0, Math.round(here.y)) };
-        item.style.left = `${here.x}px`;
-        item.style.top = `${here.y}px`;
-      } else here = null;
+      here = { x: Math.max(0, Math.round(p.x)), y: Math.max(0, Math.round(p.y)) };
+      Object.assign(freeDrag, here);
+      put(here);
     },
     end: (dropped, cancelled) => {
+      freeDrag = null;
       item.classList.remove("dragging");
-      if (cancelled) {
-        item.style.left = `${start.x}px`;
-        item.style.top = `${start.y}px`;
-        return;
-      }
+      item.style.width = startWidth;
+      if (cancelled) return put(start);
       // Let go past the layout's edge: where it was dragged to.
       if (!dropped && here && conns.length === 1) void setLook(graph.group(conn)?.data.to, { x: here.x, y: here.y });
     },
@@ -2435,6 +2846,48 @@ async function arrangeOnce(parent, kind) {
 
 function afterRender() {
   requestAnimationFrame(measureFree);
+  restoreScrolls();
+}
+
+// ---------- where things were scrolled (as in layr_code): the view, and each free layout's scroll area
+
+const scrollKey = () => `${S.viewId}/${S.root}`;
+
+/** Each scroller (`data-scroll`: "body", or a free layout's parent) shown anew goes back where it was left. */
+function restoreScrolls() {
+  const key = scrollKey();
+  for (const el of document.querySelectorAll("#main [data-scroll]")) {
+    if (el.__scroll !== key) {
+      el.__scroll = key;
+      el.__want = S.scrolls[key]?.[el.dataset.scroll] ?? null;
+      el.__until = Date.now() + 2000;
+    }
+    if (!el.__listening) {
+      el.__listening = true;
+      el.addEventListener("scroll", () => !el.__want && keepScroll(el), { passive: true });
+      // The user scrolls first: what was left gives way.
+      for (const type of ["wheel", "pointerdown", "keydown", "touchstart"])
+        el.addEventListener(type, () => (el.__want = null), { passive: true });
+    }
+    const want = el.__want;
+    if (!want) continue;
+    el.scrollLeft = want[0];
+    el.scrollTop = want[1];
+    // Rows still loading: tried again on the next renders, for two seconds.
+    const there = Math.abs(el.scrollLeft - want[0]) < 2 && Math.abs(el.scrollTop - want[1]) < 2;
+    if (there || Date.now() > el.__until) el.__want = null;
+  }
+}
+
+function keepScroll(el) {
+  const key = el.__scroll;
+  if (!key || (el.dataset.scroll === "body" && el.classList.contains("canvas"))) return;
+  const at = { ...S.scrolls[key], [el.dataset.scroll]: [Math.round(el.scrollLeft), Math.round(el.scrollTop)] };
+  delete S.scrolls[key];
+  S.scrolls[key] = at;
+  const keys = Object.keys(S.scrolls);
+  for (const k of keys.slice(0, Math.max(0, keys.length - 40))) delete S.scrolls[k];
+  rememberSoon();
 }
 
 // ---------- dragging rows
@@ -2678,7 +3131,12 @@ async function rootKey(e, { el, flush }) {
 function onViewKey(e) {
   if (e.defaultPrevented || modalOpen() || S.mode !== "ready" || $(".menu-layer")) return;
   const t = e.target;
-  if (t.isContentEditable || t.closest?.("input, textarea, select, .side, .details")) return;
+  if (t.isContentEditable || t.closest?.("input, textarea, select")) return;
+  if (e.altKey && e.key === "ArrowLeft" && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
+    e.preventDefault();
+    return void goBack();
+  }
+  if (t.closest?.(".side, .details")) return;
   const action = rowAction(e);
   if (!action || (t.closest?.("button") && ["edit", "toggle", "child"].includes(action))) return;
   if (action === "clear") {
@@ -2848,6 +3306,8 @@ const menuActions = {
   removePicture: (node) => void removePicture(node),
   newViewOf: (node) => void newView(node),
   renameView: () => void renameView(),
+  history: (node) => void showHistory(node),
+  deleteView: () => void deleteView(),
   takeOut: (conns) => void removeRows(conns),
   delete: (node) => void deleteNode(node),
 };
@@ -2966,7 +3426,7 @@ function renderDetails(node) {
       "div.d-head",
       h("span.d-kicker", n.data.prototype ? "Prototype" : "Node"),
       h("span.layr-spacer"),
-      graph.childCount(node) > 0 && iconButton("open", "Show it as the root", () => void focusRoot(node)),
+      node !== S.root && iconButton("open", "Show it as the root", () => void focusRoot(node)),
       iconButton(
         "more",
         "More",

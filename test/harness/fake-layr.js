@@ -90,12 +90,21 @@
         .filter((n) => n.text.toLowerCase().includes(q.toLowerCase()))
         .slice(0, max_hits)
         .map((n) => ({ id: n.id, text: n.text, path: path(n.id) })),
-    where: ({ node_id }) => ({
-      parents: parentsOf(node_id).map((g) => ({
-        id: g.parent,
-        text: T.nodes.find((n) => n.id === g.parent)?.text ?? "",
-      })),
-    }),
+    where: ({ node_id }) => {
+      const view = T.views.some((v) => v.root === node_id);
+      return {
+        view,
+        parents: parentsOf(node_id).map((g) => ({
+          id: g.parent,
+          text: T.nodes.find((n) => n.id === g.parent)?.text ?? "",
+        })),
+        path: view ? [] : path(node_id),
+      };
+    },
+    history: ({ node_id }) =>
+      node_id === "bread"
+        ? [{ at: "2026-11-01T10:00:00Z", actor: "ai", what: "changed the text", other_text: null, was: "Bred" }]
+        : [],
     types: () => {
       const node = T.settings[0]?.edge_types;
       return {

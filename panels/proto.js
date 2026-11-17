@@ -78,8 +78,9 @@ export function protoFrame({ title, html, fill = false, onHeight }) {
     grip.addEventListener("pointerdown", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      // The pointer stays captured, as it would otherwise be lost to the page when it moves over the frame.
-      grip.setPointerCapture(e.pointerId);
+      // The window hears the moves (pointer capture loses them in layr's Windows web views); the frames take no
+      // pointer meanwhile, so the page inside doesn't swallow them.
+      document.body.classList.add("proto-resizing");
       const start = box.offsetHeight;
       const zoomed = box.getBoundingClientRect().height / start || 1;
       const from = e.clientY;
@@ -92,8 +93,10 @@ export function protoFrame({ title, html, fill = false, onHeight }) {
         draw();
       };
       const onDone = () => {
-        grip.removeEventListener("pointermove", onMove);
-        grip.removeEventListener("lostpointercapture", onDone);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onDone);
+        window.removeEventListener("pointercancel", onDone);
+        document.body.classList.remove("proto-resizing");
         grip.classList.remove("resizing");
         const r = resizing;
         if (r === null || r === start) {
@@ -105,8 +108,9 @@ export function protoFrame({ title, html, fill = false, onHeight }) {
         draw();
         onHeight(r);
       };
-      grip.addEventListener("pointermove", onMove);
-      grip.addEventListener("lostpointercapture", onDone);
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onDone);
+      window.addEventListener("pointercancel", onDone);
     });
     el.append(grip);
   }

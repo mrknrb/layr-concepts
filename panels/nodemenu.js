@@ -293,7 +293,7 @@ export function nodeMenuItems(graph, { node, group, open = false, root = false, 
         shortcut: "Space",
         run: () => act.toggle(node),
       },
-    !root && kids > 0 && { label: "Show it as the root", icon: "open_in_full", run: () => act.focusRoot(node) },
+    !root && { label: "Show it as the root", icon: "open_in_full", run: () => act.focusRoot(node) },
     "-",
     proto &&
       ctx.view && {
@@ -337,7 +337,9 @@ export function nodeMenuItems(graph, { node, group, open = false, root = false, 
     { label: n.data.image ? "Change the picture…" : "Add a picture…", icon: "image", run: () => act.picture(node) },
     n.data.image && { label: "Remove the picture", icon: "hide_image", run: () => act.removePicture(node) },
     { label: "New view of this node", icon: "add_box", run: () => act.newViewOf(node) },
+    { label: "History…", icon: "history", run: () => act.history(node) },
     root && ctx.view && { label: "Rename this view…", icon: "drive_file_rename_outline", run: () => act.renameView() },
+    root && ctx.view && { label: "Delete this view…", icon: "delete", run: () => act.deleteView() },
     "-",
     group && {
       label: "Take out of this group",

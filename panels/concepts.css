@@ -75,8 +75,18 @@ body {
   display: none;
 }
 .hit {
+  position: relative;
   padding: 6px 10px;
   cursor: pointer;
+}
+/* A hit's ⤢: show it as the root (a click elsewhere on the hit shows it where it is). */
+.hit-root {
+  float: right;
+  margin: 0 -4px 0 6px;
+  opacity: 0.6;
+}
+.hit:hover .hit-root {
+  opacity: 1;
 }
 .hit:hover {
   background: var(--bg-3);
@@ -116,6 +126,22 @@ body {
 }
 .view-row:hover {
   background: var(--bg-3);
+}
+.view-tools {
+  display: none;
+  gap: 2px;
+}
+.view-row:hover .view-tools,
+.view-row:focus-within .view-tools {
+  display: flex;
+}
+.view-row:hover .count {
+  display: none;
+}
+@media (pointer: coarse) {
+  .view-row.active .view-tools {
+    display: flex;
+  }
 }
 .view-row.active {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
@@ -229,8 +255,34 @@ body {
 .crumb:hover {
   color: var(--accent);
 }
+.crumbs {
+  align-items: center;
+}
 .crumb::after {
   content: " ›";
+}
+/* The view's root, when the way down doesn't pass it; the other groups it is in: no "›" (they aren't above). */
+.crumb.home::before {
+  content: "⌂ ";
+}
+.crumb.home::after {
+  content: " ·";
+}
+.crumbs-also {
+  margin-left: 6px;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+.crumb.also::after {
+  content: ",";
+}
+.crumb.also:last-child::after {
+  content: "";
+}
+.back {
+  min-width: 22px;
+  margin-right: 4px;
+  font-size: 13px;
 }
 .root-row {
   display: flex;
@@ -364,6 +416,10 @@ body {
 }
 .places {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
   border-radius: 999px;
   font-size: 11px;
   line-height: 16px;
@@ -373,6 +429,9 @@ body {
 }
 .places.threads {
   background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+.places:hover {
+  outline: 1px solid var(--accent);
 }
 .row-tools {
   display: inline-flex;
@@ -816,8 +875,21 @@ body.dragging * {
   cursor: grabbing !important;
   user-select: none;
 }
+body.proto-resizing,
+body.proto-resizing * {
+  cursor: ns-resize !important;
+  user-select: none;
+}
+body.proto-resizing iframe,
+body.dragging iframe,
+body.panning iframe {
+  pointer-events: none;
+}
 .drag-ghost {
   position: fixed;
+  left: 0;
+  top: 0;
+  will-change: transform;
   z-index: 50;
   pointer-events: none;
   max-width: 260px;
@@ -831,6 +903,9 @@ body.dragging * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.drag-ghost[hidden] {
+  display: none;
 }
 .drag-ghost.ok {
   border-color: var(--accent);
@@ -1100,8 +1175,11 @@ button.tag-pill:hover {
   cursor: grab;
   touch-action: none;
 }
-.canvas-area.panning {
-  cursor: grabbing;
+.canvas-area.panning,
+body.panning,
+body.panning * {
+  cursor: grabbing !important;
+  user-select: none;
 }
 .canvas-content {
   position: absolute;
@@ -1166,9 +1244,11 @@ button.tag-pill:hover {
   stroke: var(--bg);
   stroke-width: 3px;
 }
+/* As wide as its text up to 320px (not narrower near the layout's right edge), wider for a free layout inside it. */
 .free-item {
   position: absolute;
-  min-width: 80px;
+  width: max-content;
+  min-width: min-content;
   max-width: 320px;
   padding: 4px 8px 4px 16px;
   border: 1px solid var(--border);
@@ -1176,6 +1256,10 @@ button.tag-pill:hover {
   background: var(--bg-2);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.15);
   cursor: default;
+}
+.free-item:has(> .item > .item-head.selected) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 .free-item.sized {
   max-width: none;
@@ -1260,6 +1344,15 @@ button.tag-pill:hover {
   overflow-x: auto;
   border: 1px dashed var(--border);
   border-radius: var(--radius);
+}
+/* Inside another free layout (or the canvas) a free layout is as wide as it needs: only the outermost keeps to the
+   space there is (as in layr_code). */
+.free .free-scroll,
+.free .free-grow {
+  max-width: none;
+}
+.free .free-grow {
+  overflow: visible;
 }
 .corner-handle {
   position: absolute;
@@ -1576,4 +1669,93 @@ body.prototypes-panel {
 }
 .app.narrow .selection-bar .layr-button {
   padding: 2px 6px;
+}
+
+/* ---------- pictures in the map (as in layr_code) ---------- */
+
+.node-picture {
+  margin: 4px 0 6px 22px;
+  max-width: calc(100% - 22px);
+}
+.view-head .node-picture,
+.free-item .node-picture {
+  margin-left: 0;
+  max-width: 100%;
+}
+/* The picture and, on its right edge, a handle to drag its width by. */
+.picture-frame {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+}
+.picture-open {
+  display: block;
+  padding: 0;
+  border: none;
+  background: none;
+  max-width: 100%;
+  cursor: zoom-in;
+}
+.picture-open img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  box-sizing: border-box;
+}
+.picture-handle {
+  position: absolute;
+  top: 0;
+  right: -6px;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  touch-action: none;
+  border-radius: 3px;
+}
+.picture-frame:hover .picture-handle,
+.picture-frame.resizing .picture-handle {
+  background: linear-gradient(var(--fg-dim), var(--fg-dim)) center / 2px 60% no-repeat;
+}
+.picture-handle:hover,
+.picture-frame.resizing .picture-handle {
+  background-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.node-picture figcaption,
+.picture-big figcaption {
+  margin-top: 3px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.picture-big {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 0.75);
+  cursor: zoom-out;
+}
+.picture-big figure {
+  margin: 0;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 0;
+}
+.picture-big img {
+  max-width: 100%;
+  min-height: 0;
+  object-fit: contain;
+  border-radius: var(--radius);
+}
+.picture-big figcaption {
+  color: #fff;
 }

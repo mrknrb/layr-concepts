@@ -90,6 +90,9 @@ const seed = {
     { id: "e-dev", from_node: "login2", to_node: "login", type: "dev", label: null, in_group: null, created_at: at },
   ],
   views: [{ id: "v1", root: "root", name: null, created_at: at }],
+  images: [
+    { id: "i1", node: "water", path: "images/w.png", caption: "A glass of water", width: 40, height: 20, created_at: at },
+  ],
   details: [
     {
       id: "d1",
@@ -445,6 +448,75 @@ try {
     );
   });
 
+  await step("found by search, made the view's root: the groups above it on top, Back to where it was", async () => {
+    const rootText = () => page.textContent(".root-text");
+    await page.click(".main-bar button[title='Views and proposals']");
+    // Where the view is scrolled is kept with its root.
+    const scrolled = await page.evaluate(async () => {
+      const body = document.querySelector("#main .view-body");
+      body.scrollTop = 0;
+      body.scrollTop = Math.min(120, body.scrollHeight - body.clientHeight);
+      await new Promise((done) => setTimeout(done, 50));
+      return body.scrollTop;
+    });
+    assert.ok(scrolled > 20, `the view scrolls (${scrolled})`);
+    await sleep(500);
+    await page.fill("#search", "Flour");
+    await page.waitForSelector(".hit .hit-root");
+    await page.click(".hit .hit-root");
+    await until(async () => (await rootText()) === "Flour", "Flour is the root");
+    const viewRoot = async () => (await tables(page)).views.find((v) => v.id === "v1").root;
+    await until(async () => (await viewRoot()) === "flour", "saved as the view's root");
+    await page.waitForSelector(".crumbs .crumb");
+    assert.deepEqual(await page.locator(".crumbs .crumb").allTextContents(), ["Recipes", "Bread"], "the way down");
+    await page.fill("#search", "");
+    await page.click(".crumbs button.back");
+    await until(async () => (await rootText()) === "Recipes", "back at Recipes");
+    await until(async () => (await viewRoot()) === "root", "the view's root set back");
+    await until(
+      async () => Math.abs((await page.evaluate(() => document.querySelector("#main .view-body").scrollTop)) - scrolled) < 2,
+      "scrolled where it was",
+    );
+    assert.equal(await page.locator(".crumbs button.back").count(), 0, "nothing more to go back to");
+
+    // ×2: the groups Yeast is in; one chosen shows it as the root, Alt+← goes back.
+    await page.locator(".item-head[data-node='yeast'] button.places").first().click();
+    await page.waitForSelector(".modal li:has-text('Pancakes')");
+    await page.click(".modal li:has-text('Pancakes')");
+    await until(async () => (await rootText()).startsWith("Pancakes"), "Pancakes is the root");
+    await page.locator("body").press("Alt+ArrowLeft");
+    await until(async () => (await rootText()) === "Recipes", "back again");
+  });
+
+  await step("a picture shows under its node, big on a click; History… lists a node's changes", async () => {
+    const img = page.locator(".item[data-key='g-water'] > .node-picture img");
+    await img.waitFor();
+    assert.equal(await img.evaluate((el) => el.style.width), "32px", "icon sized");
+    await img.click();
+    await page.waitForSelector(".picture-big:has-text('A glass of water')");
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator(".picture-big").count(), 0, "closed");
+    await page.click(".item-head[data-node='bread'] .node-text", { button: "right" });
+    await menuPath(page, ["History…"]);
+    await page.waitForSelector(".modal li:has-text('changed the text')");
+    await page.keyboard.press("Escape");
+  });
+
+  await step("a view is deleted from the views list (asked); its nodes stay", async () => {
+    await page.click(".item-head[data-node='soup'] .node-text", { button: "right" });
+    await menuPath(page, ["New view of this node"]);
+    await until(async () => (await tables(page)).views.length === 2, "a second view");
+    await until(async () => (await page.textContent(".root-text")) === "Soup", "it shows");
+    const row = page.locator(".view-row.active");
+    await row.hover();
+    await row.locator("button[aria-label='Delete']").click();
+    await page.click(".modal button:has-text('Delete view')");
+    await until(async () => (await tables(page)).views.length === 1, "deleted");
+    await until(async () => (await page.textContent(".root-text")) === "Recipes", "the other view open");
+    assert.ok((await tables(page)).nodes.some((n) => n.id === "soup"), "its root stays");
+    await page.click(".main-bar button[title='Hide the side']");
+  });
+
   await step("a child laid out freely: a scroll area sized by its corner, or one that grows to fit", async () => {
     await page.click(".item-head[data-node='bread'] .node-text", { button: "right" });
     await menuPath(page, ["Layout", "✥ Free"]);
@@ -496,6 +568,88 @@ try {
     await page.click(".canvas-tools .fit");
     await sleep(200);
     await page.screenshot({ path: join(SHOTS, "free-dark.png") });
+  });
+
+  await step("free: dragging the background pans the canvas; a box follows the pointer over other boxes", async () => {
+    const spotX = async () => (await page.evaluate(() => window.__layr.state)).spots?.["v1/root"]?.x ?? 0;
+    // An empty spot of the canvas: not on a box or the tools.
+    const empty = await page.evaluate(() => {
+      const r = document.querySelector(".canvas-area").getBoundingClientRect();
+      for (let y = r.top + 10; y < r.bottom - 60; y += 15)
+        for (let x = r.left + 10; x < r.right - 160; x += 15) {
+          const el = document.elementFromPoint(x, y);
+          if (el && !el.closest(".free-item, .canvas-tools")) return { x, y };
+        }
+      return null;
+    });
+    assert.ok(empty, "an empty spot");
+    const before = await spotX();
+    await page.mouse.move(empty.x, empty.y);
+    await page.mouse.down();
+    assert.ok(await page.evaluate(() => document.body.classList.contains("panning")), "panning");
+    await page.mouse.move(empty.x + 50, empty.y + 30, { steps: 5 });
+    await page.mouse.move(empty.x + 100, empty.y + 60, { steps: 5 });
+    await page.mouse.up();
+    await until(async () => Math.abs((await spotX()) - before - 100) <= 1, "panned by 100");
+    assert.ok(!(await page.evaluate(() => document.body.classList.contains("panning"))), "panning ended");
+    // A second pan works too (a pan whose release was missed doesn't block the next).
+    await page.mouse.move(empty.x + 100, empty.y + 60);
+    await page.mouse.down();
+    await page.mouse.move(empty.x + 60, empty.y + 60, { steps: 4 });
+    await page.mouse.up();
+    await until(async () => Math.abs((await spotX()) - before - 60) <= 1, "panned back by 40");
+
+    // Dragged over another box, the box still follows the pointer.
+    const item = page.locator(".free-item[data-group='g-soup']");
+    const other = await page.locator(".free-item[data-group='g-bread'] .node-text").first().boundingBox();
+    const grip = await item.locator(".grip").first().boundingBox();
+    const start = await item.evaluate((el) => el.style.left + "," + el.style.top);
+    await page.mouse.move(grip.x + 4, grip.y + 6);
+    await page.mouse.down();
+    const lefts = [];
+    for (let i = 1; i <= 6; i++) {
+      await page.mouse.move(grip.x + 4 + ((other.x + 20 - grip.x) * i) / 6, grip.y + 6 + ((other.y + 8 - grip.y) * i) / 6);
+      lefts.push(await item.evaluate((el) => el.style.left + "," + el.style.top));
+      // The label shows only over another node or group it would go into (lit up), not over its own layout.
+      const [hidden, lit] = await page.evaluate(() => [
+        document.querySelector(".drag-ghost")?.hidden,
+        !!document.querySelector(".drop-target"),
+      ]);
+      assert.equal(hidden, !lit, "a label only over another target");
+    }
+    assert.equal(new Set(lefts).size, lefts.length, `it moved on each step: ${lefts}`);
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+    assert.equal(await item.evaluate((el) => el.style.left + "," + el.style.top), start, "back where it was");
+    await sleep(100);
+  });
+
+  await step("free: a click on a box's text selects it; a second click types in it", async () => {
+    const head = page.locator(".free-item[data-group='g-soup'] .item-head").first();
+    const text = head.locator(".node-text");
+    await text.click();
+    await until(async () => (await head.getAttribute("class")).includes("selected"), "selected");
+    assert.ok(!(await text.evaluate((el) => document.activeElement === el)), "not typed in yet");
+    await text.click();
+    assert.ok(await text.evaluate((el) => document.activeElement === el), "typed in");
+    await page.keyboard.press("Escape");
+    // A click beside its rows, in the box, selects the box's node.
+    const spot = await page.evaluate(() => {
+      const item = document.querySelector(".free-item[data-group='g-bread']");
+      const r = item.getBoundingClientRect();
+      for (let y = r.top + 1; y < r.bottom; y += 2)
+        for (let x = r.left + 1; x < r.right - 6; x += 2) if (document.elementFromPoint(x, y) === item) return { x, y };
+      return null;
+    });
+    assert.ok(spot, "a spot in the box beside its rows");
+    await page.mouse.click(spot.x, spot.y);
+    await until(
+      async () =>
+        (await page.locator(".free-item[data-group='g-bread'] .item-head").first().getAttribute("class")).includes(
+          "selected",
+        ),
+      "the box selected",
+    );
   });
 
   await step("Ctrl+scroll zooms the canvas, kept with the panel", async () => {
