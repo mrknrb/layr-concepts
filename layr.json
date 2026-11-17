@@ -1,7 +1,7 @@
 {
   "id": "concepts",
   "name": "Concepts",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Your concept map: nodes in groups, edges, tags, summaries, prototypes and AI proposals, shared with layr_code.",
   "author": "mrknrb",
   "layr": "^0.1",
@@ -10,10 +10,21 @@
     "data",
     "pc",
     "supabase",
-    "network:https://tirznddjqwrovpvasgpn.supabase.co",
-    "plugins:claude"
+    "network:https://tirznddjqwrovpvasgpn.supabase.co"
   ],
   "needs": ["pc", "node"],
+  "connections": [
+    {
+      "plugin": "claude",
+      "groups": ["read", "ask", "run"],
+      "why": "Titles of linked Claude threads, AI summaries of groups, and Ask in a Claude thread from a node"
+    },
+    {
+      "plugin": "pipeline",
+      "groups": ["read", "work"],
+      "why": "Titles of linked pipeline tasks, Link a task, and Send to pipeline from a node"
+    }
+  ],
   "panels": [
     { "id": "map", "title": "Concepts", "page": "panels/concepts.html", "icon": "hub" },
     { "id": "prototypes", "title": "Prototypes", "page": "panels/prototypes.html", "icon": "web" }
