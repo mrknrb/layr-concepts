@@ -2356,6 +2356,13 @@ async function addInside(node) {
 
 // ---------- free layouts
 
+/** The menu target of `node`, the last of `path` (the root, or a row in its parent: the one before it). */
+function groupAt(node, path) {
+  if (node === S.root) return { node, root: true };
+  const group = graph.membership(path[path.length - 2], node)?.id;
+  return group ? { node, group, open: true } : { node, root: true };
+}
+
 /** Pan and zoom of the root laid out freely, as this panel left it there. */
 const spotKey = () => `${S.viewId}/${S.root}`;
 const spot = () => S.spots[spotKey()] ?? { x: 0, y: 0, zoom: 1 };
@@ -2396,6 +2403,11 @@ function renderCanvas(root) {
         } else setSpot({ ...cur, x: cur.x - e.deltaX, y: cur.y - e.deltaY });
       },
       onpointerdown: (e) => startPan(e),
+      // Around the children too (their own area answers first): the root's menu.
+      oncontextmenu: (e) => {
+        if (e.defaultPrevented || e.target.closest(".free-item, .canvas-tools")) return;
+        rowMenu(e, { node: root, root: true });
+      },
     },
     h(
       "div.canvas-content",
@@ -2578,6 +2590,11 @@ function renderFree(parent, path) {
       class: auto && !S.generated.get(parent) ? "pending" : "",
       dataset: { drop: "free", parent, key: `free:${parent}` },
       style: `width: ${size.w}px; height: ${size.h}px`,
+      // A right-click on its background: the menu of the node whose children these are.
+      oncontextmenu: (e) => {
+        if (e.target.closest(".free-item, .free") !== e.currentTarget) return;
+        rowMenu(e, groupAt(parent, path));
+      },
     },
     h(
       "svg.free-svg",

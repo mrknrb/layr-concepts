@@ -537,6 +537,28 @@ try {
     await until(async () => (await tables(page)).looks.find((l) => l.node === "bread")?.overflow === "grow", "saved");
   });
 
+  await step("a right-click on a free layout's background: the menu of the node it lays out", async () => {
+    const area = ".item:has(> .item-head[data-node='bread']) .free";
+    const empty = await page.evaluate((sel) => {
+      const free = document.querySelector(sel);
+      const r = free.getBoundingClientRect();
+      for (let y = r.top + 4; y < r.bottom - 4; y += 6)
+        for (let x = r.left + 4; x < r.right - 4; x += 6) {
+          const el = document.elementFromPoint(x, y);
+          if (el && el.closest(".free-item, .free") === free) return { x, y };
+        }
+      return null;
+    }, area);
+    assert.ok(empty, "an empty spot in bread's free layout");
+    await page.mouse.click(empty.x, empty.y, { button: "right" });
+    await menuPath(page, ["Layout", "↓ Vertical"]);
+    await until(async () => ((await tables(page)).looks.find((l) => l.node === "bread")?.layout ?? null) !== "free",
+      "bread's layout changed from its background's menu");
+    await page.click(".item-head[data-node='bread'] .node-text", { button: "right" });
+    await menuPath(page, ["Layout", "✥ Free"]);
+    await page.waitForSelector(`${area} .free-item`);
+  });
+
   await step("horizontal: the root's children side by side", async () => {
     await page.click(".main-bar .layout-switch button[aria-label='Horizontal']");
     await page.waitForSelector(".view-body > .list.horizontal");
