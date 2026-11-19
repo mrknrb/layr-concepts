@@ -1,0 +1,76 @@
+{
+  "id": "concepts",
+  "name": "Concepts",
+  "version": "0.3.0",
+  "description": "Your concept map: nodes in groups, edges, tags, summaries, prototypes and AI proposals, shared with layr_code.",
+  "author": "mrknrb",
+  "layr": "^0.1",
+  "icon": "hub",
+  "permissions": [
+    "data",
+    "pc",
+    "supabase",
+    "network:https://tirznddjqwrovpvasgpn.supabase.co"
+  ],
+  "needs": ["pc", "node"],
+  "connections": [
+    {
+      "plugin": "claude",
+      "groups": ["read", "ask", "run"],
+      "why": "Titles of linked Claude threads, AI summaries of groups, and Ask in a Claude thread from a node"
+    },
+    {
+      "plugin": "pipeline",
+      "groups": ["read", "work"],
+      "why": "Titles of linked pipeline tasks, Link a task, and Send to pipeline from a node"
+    }
+  ],
+  "panels": [
+    { "id": "map", "title": "Concepts", "page": "panels/concepts.html", "icon": "hub" },
+    { "id": "prototypes", "title": "Prototypes", "page": "panels/prototypes.html", "icon": "web" }
+  ],
+  "links": [
+    { "path": "node", "panel": "map", "param": "node" },
+    { "path": "prototype", "panel": "prototypes", "param": "prototype" }
+  ],
+  "commands": [
+    { "id": "open", "title": "Concepts: Open the concept map", "panel": "map" },
+    { "id": "new-view", "title": "Concepts: New view", "panel": "map", "params": { "newView": true } },
+    { "id": "search", "title": "Concepts: Search nodes", "panel": "map", "params": { "search": true } },
+    { "id": "refresh", "title": "Concepts: Refresh", "event": "refresh" }
+  ],
+  "menus": [
+    { "menu": "View", "command": "open", "group": "3" },
+    { "menu": "Concepts", "command": "open", "group": "1" },
+    { "menu": "Concepts", "command": "new-view", "group": "1" },
+    { "menu": "Concepts", "command": "search", "group": "1" },
+    { "menu": "Concepts", "command": "refresh", "group": "2" }
+  ],
+  "keybindings": [{ "key": "ctrl+alt+k", "command": "open" }],
+  "settings": [
+    {
+      "id": "proposals",
+      "type": "boolean",
+      "title": "Proposals for big AI changes",
+      "description": "Deleting, taking out of a group, moving to another group, adding more than 10 nodes and retyping more than 10 edges wait for your Accept in the Concepts panel. Off: AI makes them right away.",
+      "default": true
+    }
+  ],
+  "backend": { "kind": "process", "runtime": "node", "entry": "backend/server.js" },
+  "access": {
+    "groups": [
+      { "id": "read", "label": "Read your concept maps",
+        "tools": ["guide", "read", "children", "views", "search", "neighbors", "types", "tags", "history",
+                  "prototype_page", "image", "edges", "check", "follow", "threads", "project", "nodes", "tagged",
+                  "linked_nodes", "thread_nodes", "project_map", "needs", "filed_ideas", "status_nodes"],
+        "defaults": { "plugins": "allow", "agents": "allow", "plugin:pipeline": "allow", "plugin:claude": "allow" } },
+      { "id": "write", "label": "Add to and change your concept maps",
+        "tools": ["add", "tag", "define_tag", "prototype", "set_image", "create_view", "update", "summary", "connect",
+                  "move", "mention", "file", "link", "relink", "advance_status", "add_lessons", "setup_project_map",
+                  "summarize", "drop_nodes", "remove"],
+        "defaults": { "agents": "allow", "plugin:pipeline": "allow" } },
+      { "id": "decide", "label": "Accept or decline proposals", "tools": ["decide", "apply_proposal"],
+        "defaults": { "agents": "allow" } }
+    ]
+  }
+}
