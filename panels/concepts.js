@@ -1019,9 +1019,14 @@ const openWeb = (href) => void window.open(href, "_blank", "noopener,noreferrer"
 const openPrototypes = (nodes) =>
   void layr.panels.open("prototypes", { nodes }, { where: "tab" }).catch((e) => layr.ui.notify(e.message, "error"));
 
+/**
+ * Put `text` on the clipboard. The shell writes it (layr.clipboard): after a menu the shell drew, the page isn't
+ * focused and navigator.clipboard refuses. The text to copy by hand only when neither can.
+ */
 async function copyText(text, what = "Link") {
   try {
-    await navigator.clipboard.writeText(text);
+    if (layr.clipboard?.writeText) await layr.clipboard.writeText(text);
+    else await navigator.clipboard.writeText(text);
     layr.ui.notify(`${what} copied`, "success");
   } catch {
     await showText(`${what}: press Ctrl+C to copy it`, text);

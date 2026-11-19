@@ -1,7 +1,7 @@
 {
   "id": "concepts",
   "name": "Concepts",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Your concept map: nodes in groups, edges, tags, summaries, prototypes and AI proposals, shared with layr_code.",
   "author": "mrknrb",
   "layr": "^0.1",

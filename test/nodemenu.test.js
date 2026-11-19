@@ -43,7 +43,7 @@ describe("a node's context menu", () => {
     const items = nodeMenuItems(sample(), { node: "b", group: "gb" }, act);
     expect(items[0].label).toBe("Edit");
     expect(items[0].icon).toBe("edit");
-    expect(items[1]).toBe("-");
+    expect(items[2]).toBe("-");
     items[0].run();
     expect(calls).toEqual([["edit", "b"]]);
   });
@@ -51,6 +51,7 @@ describe("a node's context menu", () => {
     const items = nodeMenuItems(sample(), { node: "b", group: "gb" }, recorder().act);
     expect(labels(items)).toEqual([
       "Edit",
+      "Copy link",
       "-",
       "Add inside",
       "Add below",
@@ -169,13 +170,18 @@ describe("a node's context menu", () => {
     // A node without children, shown as the root: nothing to select.
     expect(find(nodeMenuItems(sample(), { node: "b", root: true }, act), "Select")).toBe(undefined);
   });
+  it("has Copy link at the top, right under Edit", () => {
+    const { act, calls } = recorder();
+    const items = nodeMenuItems(sample(), { node: "b", group: "gb" }, act);
+    expect(labels(items).slice(0, 2)).toEqual(["Edit", "Copy link"]);
+    items[1].run();
+    expect(calls).toEqual([["copyLink", "b"]]);
+  });
   it("has the link actions, without the pipeline's and Claude's when they aren't there", () => {
     const { act, calls } = recorder();
     const ctx = { look: () => undefined, view: true };
     const links = find(nodeMenuItems(sample(), { node: "b", group: "gb" }, act, ctx), "Links");
     expect(labels(links.items)).toEqual([
-      "Copy link",
-      "-",
       "Send to the pipeline as a task…",
       "Link a pipeline task…",
       "Unlink…",
@@ -185,7 +191,6 @@ describe("a node's context menu", () => {
     ]);
     for (const item of links.items) if (item !== "-") item.run();
     expect(calls.map((c) => c[0])).toEqual([
-      "copyLink",
       "sendToPipeline",
       "linkTask",
       "unlink",
@@ -193,7 +198,7 @@ describe("a node's context menu", () => {
       "makeIdea",
     ]);
     const bare = find(nodeMenuItems(sample(), { node: "b" }, act, { ...ctx, pipeline: false, claude: false }), "Links");
-    expect(labels(bare.items)).toEqual(["Copy link", "-", "Unlink…"]);
+    expect(labels(bare.items)).toEqual(["Unlink…"]);
   });
   it("offers a prototype's page, folded or not, and its links", () => {
     const graph = sample();
@@ -203,7 +208,7 @@ describe("a node's context menu", () => {
     const items = nodeMenuItems(graph, { node: "b", group: "gb" }, act, ctx);
     find(items, "Fold its page away").run();
     find(items, "Open the prototype big").run();
-    expect(labels(find(items, "Links").items).slice(0, 2)).toEqual(["Copy the prototype link", "Copy the node link"]);
+    expect(labels(items).slice(1, 3)).toEqual(["Copy the prototype link", "Copy the node link"]);
     expect(calls).toEqual([
       ["protoOpen", "b", false],
       ["openPrototypes", ["b"]],

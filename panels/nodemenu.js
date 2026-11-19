@@ -209,16 +209,21 @@ export function tagPillItems(graph, node, tagId, filter, act) {
   ]);
 }
 
-/** Links to other plugins: copy, send to the pipeline, link or unlink a task, ask Claude, make an idea. */
-function linkItems(graph, node, act, ctx) {
+/** Copy link (and a prototype's node link): at the top of the node's menu, it is used most. */
+function copyItems(graph, node, act) {
   const proto = !!graph.node(node)?.data.prototype;
+  return [
+    { label: proto ? "Copy the prototype link" : "Copy link", icon: "content_copy", run: () => act.copyLink(node) },
+    proto && { label: "Copy the node link", icon: "content_copy", run: () => act.copyLink(node, "node") },
+  ];
+}
+
+/** Links to other plugins: send to the pipeline, link or unlink a task, ask Claude, make an idea. */
+function linkItems(node, act, ctx) {
   return {
     label: "Links",
     icon: "link",
     items: [
-      { label: proto ? "Copy the prototype link" : "Copy link", icon: "content_copy", run: () => act.copyLink(node) },
-      proto && { label: "Copy the node link", run: () => act.copyLink(node, "node") },
-      "-",
       ctx.pipeline !== false && {
         label: "Send to the pipeline as a task…",
         icon: "rocket_launch",
@@ -277,6 +282,7 @@ export function nodeMenuItems(graph, { node, group, open = false, root = false, 
 
   return tidy([
     { label: "Edit", icon: "edit", shortcut: "Alt+Enter", run: () => act.edit(node) },
+    ...copyItems(graph, node, act),
     "-",
     {
       label: "Add inside",
@@ -333,7 +339,7 @@ export function nodeMenuItems(graph, { node, group, open = false, root = false, 
     group && { label: "Move to…", icon: "drive_file_move", shortcut: "M", run: () => act.moveTo([group]) },
     { label: "Also in…", icon: "library_add", run: () => act.alsoIn(node, group) },
     "-",
-    linkItems(graph, node, act, ctx),
+    linkItems(node, act, ctx),
     { label: n.data.image ? "Change the picture…" : "Add a picture…", icon: "image", run: () => act.picture(node) },
     n.data.image && { label: "Remove the picture", icon: "hide_image", run: () => act.removePicture(node) },
     { label: "New view of this node", icon: "add_box", run: () => act.newViewOf(node) },
