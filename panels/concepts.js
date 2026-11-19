@@ -2587,7 +2587,10 @@ function renderFree(parent, path) {
     ),
     kids.map((g, i) => {
       const p = pos.get(g.id);
-      const w = look(g.data.to)?.w ?? (freeDrag?.conn === g.id ? freeDrag.w : undefined);
+      const w =
+        (widthDrag?.conn === g.id ? widthDrag.w : undefined) ??
+        look(g.data.to)?.w ??
+        (freeDrag?.conn === g.id ? freeDrag.w : undefined);
       return h(
         "div.free-item",
         {
@@ -2653,17 +2656,30 @@ function follow(e, move, done) {
   window.addEventListener("pointercancel", onUp);
 }
 
+/**
+ * The child of a free layout whose width is being dragged, and that width. Each width change is measured and drawn
+ * again; without it a render put back the saved width and the box jumped between the two while held.
+ */
+let widthDrag = null;
+
 function startWidthDrag(e, conn) {
   const item = e.currentTarget.closest(".free-item");
   const start = item.offsetWidth;
-  let w = start;
+  const drag = { conn, w: start };
+  widthDrag = drag;
   follow(
     e,
     (dx) => {
-      w = Math.round(Math.min(WIDTH.max, Math.max(WIDTH.min, start + dx)));
-      item.style.width = `${w}px`;
+      drag.w = Math.round(Math.min(WIDTH.max, Math.max(WIDTH.min, start + dx)));
+      item.style.width = `${drag.w}px`;
+      item.classList.add("sized");
     },
-    () => w !== start && void setLook(graph.group(conn)?.data.to, { w }),
+    () => {
+      const done = () => widthDrag === drag && (widthDrag = null);
+      if (drag.w === start) return done();
+      // It stays at the dragged width until the saved one arrives.
+      Promise.resolve(setLook(graph.group(conn)?.data.to, { w: drag.w })).finally(done);
+    },
   );
 }
 

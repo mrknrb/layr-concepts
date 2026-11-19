@@ -1,6 +1,6 @@
 {
   "name": "layr-plugin-concepts",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "type": "module",
   "description": "layr's concept map: nodes in groups, edges, tags, summaries, prototypes, proposals, project maps.",
