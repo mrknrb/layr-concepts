@@ -5,7 +5,7 @@
 // test/markdown.test.js).
 import { parseLayrLink } from "../shared/links.js";
 
-const LINK_ICONS = { concepts: "◆", claude: "💬", chat: "💬", pipeline: "▶" };
+const LINK_ICONS = { concepts: "◆", threads: "💬", claude: "💬", chat: "💬", pipeline: "▶" };
 
 export const escapeHtml = (text) =>
   String(text).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");

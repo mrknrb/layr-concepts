@@ -1,5 +1,5 @@
 // The backend's link to the core's MCP hub (docs/ARCHITECTURE.md › The MCP hub): the user's Supabase session
-// (layr__supabase_session), the plugin's own data, events to its panels, and the claude plugin's thread titles.
+// (layr__supabase_session), the plugin's own data, events to its panels, and the threads plugin's thread titles.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
@@ -69,7 +69,7 @@ export class Hub {
     }
   }
 
-  /** The names of the hub tools this plugin may call (e.g. to see whether the claude plugin offers `ask`). */
+  /** The names of the hub tools this plugin may call (e.g. to see whether the threads plugin offers `ask`). */
   async toolNames() {
     const client = await this.connect();
     const names = [];

@@ -15,9 +15,10 @@
   "needs": ["pc", "node"],
   "connections": [
     {
-      "plugin": "claude",
+      "plugin": "threads",
+      "version": ">=0.15",
       "groups": ["read", "ask", "run"],
-      "why": "Titles of linked Claude threads, AI summaries of groups, and Ask in a Claude thread from a node"
+      "why": "Titles of linked threads, AI summaries of groups, and Ask in a thread from a node"
     },
     {
       "plugin": "pipeline",
@@ -63,7 +64,7 @@
         "tools": ["guide", "read", "children", "views", "search", "neighbors", "types", "tags", "history",
                   "prototype_page", "image", "edges", "check", "follow", "threads", "project", "nodes", "tagged",
                   "linked_nodes", "thread_nodes", "project_map", "needs", "filed_ideas", "status_nodes"],
-        "defaults": { "plugins": "allow", "agents": "allow", "plugin:pipeline": "allow", "plugin:claude": "allow" } },
+        "defaults": { "plugins": "allow", "agents": "allow", "plugin:pipeline": "allow", "plugin:threads": "allow" } },
       { "id": "write", "label": "Add to and change your concept maps",
         "tools": ["add", "tag", "define_tag", "prototype", "set_image", "create_view", "update", "summary", "connect",
                   "move", "mention", "file", "link", "relink", "advance_status", "add_lessons", "setup_project_map",

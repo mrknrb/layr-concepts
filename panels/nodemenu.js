@@ -232,7 +232,7 @@ function linkItems(node, act, ctx) {
       ctx.pipeline !== false && { label: "Link a pipeline task…", icon: "add_link", run: () => act.linkTask(node) },
       { label: "Unlink…", icon: "link_off", run: () => act.unlink(node) },
       "-",
-      ctx.claude !== false && { label: "Ask in a Claude thread…", icon: "forum", run: () => act.askClaude(node) },
+      ctx.claude !== false && { label: "Ask in a thread…", icon: "forum", run: () => act.askClaude(node) },
       ctx.claude !== false && { label: "Make an idea from this", icon: "lightbulb", run: () => act.makeIdea(node) },
     ],
   };

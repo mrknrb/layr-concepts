@@ -9,7 +9,7 @@ function fakeCtx(options = {}) {
     claude: {
       threadTitle: async (id) => {
         claudeReads.push(id);
-        if (id === "gone") throw new Error(`No Claude thread "${id}"`);
+        if (id === "gone") throw new Error(`No thread "${id}"`);
         return "Tidy the map";
       },
     },
@@ -45,19 +45,21 @@ function fakeCtx(options = {}) {
   return { ctx, marks, t3Reads, claudeReads };
 }
 describe("thread links", () => {
-  it("finds a Claude thread by its id, with its title, once", async () => {
+  it("finds a thread of the threads plugin by its id, with its title, once", async () => {
     const { ctx, claudeReads } = fakeCtx();
     const links = threads(ctx);
     const who = await links.actor({}, "th_1");
     expect(who).toEqual({
-      thread: "layr://claude/thread/th_1",
-      href: "layr://claude/thread/th_1",
+      thread: "layr://threads/thread/th_1",
+      href: "layr://threads/thread/th_1",
       title: "Tidy the map",
     });
-    expect(await links.actor({}, "layr://claude/thread/th_1")).toEqual(who);
+    expect(await links.actor({}, "layr://threads/thread/th_1")).toEqual(who);
     expect(claudeReads).toEqual(["th_1"]);
-    await expect(links.actor({}, "gone")).rejects.toThrow(/No Claude thread "gone"/);
-    // Without the claude plugin, it can't tell the title.
+    // Its link from before the plugin was renamed (`claude`) is the same thread, under the new link.
+    expect(await links.actor({}, "layr://claude/thread/th_1")).toEqual(who);
+    await expect(links.actor({}, "gone")).rejects.toThrow(/No thread "gone"/);
+    // Without the threads plugin, it can't tell the title.
     const bare = fakeCtx().ctx;
     delete bare.claude;
     expect((await threads(bare).actor({}, "th_2"))?.title).toBeNull();
@@ -87,6 +89,25 @@ describe("thread links", () => {
         new_title: "#7 Login",
       },
     ]);
+  });
+  it("moves a thread's rows under its old `claude` link with it, and retitles them in place", async () => {
+    const { ctx, marks } = fakeCtx();
+    const links = threads(ctx);
+    const task = { thread: "layr://pipeline/task/task-7", title: "#7 Login" };
+    await links.relink("layr://threads/thread/t1", task);
+    expect(marks.map((m) => [m.thread_key, m.new_key])).toEqual([
+      ["layr://threads/thread/t1", task.thread],
+      ["layr://claude/thread/t1", task.thread],
+    ]);
+    marks.length = 0;
+    await links.relink("layr://threads/thread/t1", { thread: "layr://threads/thread/t1", title: "New title" });
+    expect(marks.map((m) => [m.thread_key, m.new_key, m.new_title])).toEqual([
+      ["layr://threads/thread/t1", "layr://threads/thread/t1", "New title"],
+      ["layr://claude/thread/t1", "layr://claude/thread/t1", "New title"],
+    ]);
+    marks.length = 0;
+    await links.relink("layr://pipeline/task/task-7", null);
+    expect(marks.map((m) => [m.thread_key, m.new_key])).toEqual([["layr://pipeline/task/task-7", null]]);
   });
   it("takes a pipeline task's link as the thread, and refuses one the pipeline doesn't have", async () => {
     const links = threads(fakeCtx({ pipeline: true }).ctx);
@@ -150,17 +171,18 @@ describe("thread links", () => {
     await links.runAs(a, async () => {});
     expect(marks).toHaveLength(2);
   });
-  it("knows the calling Claude thread from the hub's _meta, unless `thread` names one", async () => {
-    const agent = (label, plugin = "claude") => ({ "layr/caller": { kind: "agent", plugin, label } });
-    expect(callerThread(agent("t_k3j9x2m1q8"))).toBe("layr://claude/thread/t_k3j9x2m1q8");
+  it("knows the calling thread from the hub's _meta, unless `thread` names one", async () => {
+    const agent = (label, plugin = "threads") => ({ "layr/caller": { kind: "agent", plugin, label } });
+    expect(callerThread(agent("t_k3j9x2m1q8"))).toBe("layr://threads/thread/t_k3j9x2m1q8");
+    expect(callerThread(agent("t_k3j9x2m1q8", "claude"))).toBe("layr://threads/thread/t_k3j9x2m1q8");
     expect(callerThread(agent("Claude Code threads"))).toBe(undefined);
     expect(callerThread(agent("t_1", "other"))).toBe(undefined);
-    expect(callerThread({ "layr/caller": { kind: "backend", plugin: "claude" } })).toBe(undefined);
+    expect(callerThread({ "layr/caller": { kind: "backend", plugin: "threads" } })).toBe(undefined);
     expect(callerThread(undefined)).toBe(undefined);
     const { ctx, claudeReads } = fakeCtx();
     const links = threads(ctx);
     const call = { thread: callerThread(agent("t_abc")) };
-    expect((await links.actor(call, undefined)).thread).toBe("layr://claude/thread/t_abc");
+    expect((await links.actor(call, undefined)).thread).toBe("layr://threads/thread/t_abc");
     expect((await links.actor(call, "layr://pipeline/task/7")).thread).toBe("layr://pipeline/task/7");
     expect(claudeReads).toEqual(["t_abc"]);
   });

@@ -48,7 +48,7 @@ export const COMMAND_TOOLS = {
   "concepts.threadNodes": {
     tool: "thread_nodes",
     description: "For plugins: the nodes one thread changed, mentioned or was linked to, latest first.",
-    inputSchema: object({ thread: str("A Claude thread's id or a layr link") }, ["thread"]),
+    inputSchema: object({ thread: str("A thread's id or a layr link") }, ["thread"]),
   },
   "concepts.applyProposal": {
     tool: "apply_proposal",
@@ -100,7 +100,7 @@ export const COMMAND_TOOLS = {
   "concepts.summarize": {
     tool: "summarize",
     description:
-      "For the Concepts panel: write a node's summary with Claude (haiku, through the claude plugin's ask) from what " +
+      "For the Concepts panel: write a node's summary with Claude (haiku, through the threads plugin's ask) from what " +
       "is inside it, and save it. Gives `{summary}`. Agents write summaries themselves with concepts__summary.",
     inputSchema: object({ node: str("The node (full id)") }, ["node"]),
   },
@@ -145,15 +145,15 @@ export function createContext({ supabase, hub }) {
         return handler(args ?? {});
       },
     },
-    /** Core AI isn't a part of the new layr's core: one-shot answers come from the claude plugin's `ask` tool. */
+    /** Core AI isn't a part of the new layr's core: one-shot answers come from the threads plugin's `ask` tool. */
     ai: {
       available: async () => {
         if (!hub.available) return false;
         const tools = await hub.toolNames().catch(() => []);
-        return tools.includes("claude__ask");
+        return tools.includes("threads__ask");
       },
       run: async ({ model, system, prompt }) => {
-        const answer = await hub.call("claude__ask", { prompt, ...(system ? { system } : {}), model: model ?? "haiku" });
+        const answer = await hub.call("threads__ask", { prompt, ...(system ? { system } : {}), model: model ?? "haiku" });
         return { text: typeof answer === "string" ? answer : (answer?.text ?? "") };
       },
     },
@@ -164,16 +164,16 @@ export function createContext({ supabase, hub }) {
         throw new Error("T3 Code is not connected");
       },
     },
-    /** The claude plugin's threads, for thread links: their titles. */
+    /** The threads plugin's threads, for thread links: their titles. */
     claude: {
       async threadTitle(id) {
         try {
-          const status = await hub.call("claude__thread_status", { thread: id });
+          const status = await hub.call("threads__thread_status", { thread: id });
           return status?.thread?.title || null;
         } catch (error) {
           const message = errorMessage(error);
-          if (/^No thread /.test(message)) throw new Error(`No Claude thread "${id}": \`thread\` is your own thread's id`);
-          return null; // the claude plugin isn't there or can't be asked: no title
+          if (/^No thread /.test(message)) throw new Error(`No thread "${id}": \`thread\` is your own thread's id`);
+          return null; // the threads plugin isn't there or can't be asked: no title
         }
       },
     },

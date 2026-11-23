@@ -5,7 +5,7 @@
 // Rebuilt from layr_code's plugins/concepts/panels (view.tsx, store.ts, drag.tsx): each node's children laid out per
 // view (vertical, horizontal, or free on a canvas with automatic arrangements), several rows selected at once, rows
 // dragged between groups, Markdown in node texts, prototypes folded out under their nodes, tags, edges, and links to
-// the pipeline and Claude threads. The page is built anew on each change and morphed into place (dom.js).
+// the pipeline and Threads. The page is built anew on each change and morphed into place (dom.js).
 import { firstLine, Graph } from "../shared/graph.js";
 import { layrLink, layrMarkdownLink, parseLayrLink, prototypeLink } from "../shared/links.js";
 import { Ops } from "../shared/ops.js";
@@ -416,10 +416,11 @@ async function showPlaces(node) {
   setTimeout(() => flash(node), 60);
 }
 
-/** What a thread's link is: a pipeline task, a Claude thread, an AI chat. */
+/** What a thread's link is: a pipeline task, a thread (Threads; `claude` links from before), an AI chat. */
 function threadKind(href) {
   const plugin = parseLayrLink(href ?? "")?.plugin;
-  return plugin === "pipeline" ? "Task" : plugin === "claude" ? "Claude thread" : plugin === "chat" ? "AI chat" : "";
+  if (plugin === "threads" || plugin === "claude") return "Thread";
+  return plugin === "pipeline" ? "Task" : plugin === "chat" ? "AI chat" : "";
 }
 
 /** The threads that linked, changed or mentioned a node (its ◷N), latest first: choosing one opens it. */
@@ -1158,13 +1159,13 @@ const ideaPrompt = (node) =>
   ].join(" ");
 
 /**
- * Ask Claude about a node: a new thread with the node as context, started here (`claude__thread_start`), or the
- * claude plugin's new-thread form with the text in it. `idea`: the idea helper's prompt.
+ * Ask Claude about a node: a new thread with the node as context, started here (`threads__thread_start`), or the
+ * threads plugin's new-thread form with the text in it. `idea`: the idea helper's prompt.
  */
 async function askClaude(node, idea = false) {
   let projects = [];
   try {
-    projects = (await otherTool("claude", "projects_list"))?.projects ?? [];
+    projects = (await otherTool("threads", "projects_list"))?.projects ?? [];
   } catch {
     // The list can't be read (not allowed yet): the form can still be opened.
   }
@@ -1202,17 +1203,17 @@ async function askClaude(node, idea = false) {
   if (!choice) return;
   if (choice.form) {
     await layr.panels
-      .open("threads", { new: true, prompt: choice.text, text: choice.text }, { plugin: "claude" })
-      .catch((e) => layr.ui.notify(`The Claude plugin isn't there: ${e.message}`, "error"));
+      .open("threads", { new: true, prompt: choice.text, text: choice.text }, { plugin: "threads" })
+      .catch((e) => layr.ui.notify(`Threads isn't there: ${e.message}`, "error"));
     return;
   }
   try {
     const title = idea ? `Idea: ${label(node)}` : label(node);
-    const r = await otherTool("claude", "thread_start", { project: choice.project, prompt: choice.text, title });
+    const r = await otherTool("threads", "thread_start", { project: choice.project, prompt: choice.text, title });
     const id = r?.thread?.id ?? r?.id ?? r?.threadId;
     if (!id) return;
-    await linkThread(node, layrLink({ plugin: "claude", kind: "thread", id }), title);
-    await layr.panels.open("thread", { thread: id }, { plugin: "claude" }).catch(() => {});
+    await linkThread(node, layrLink({ plugin: "threads", kind: "thread", id }), title);
+    await layr.panels.open("thread", { thread: id }, { plugin: "threads" }).catch(() => {});
   } catch (error) {
     layr.ui.notify(`Claude couldn't start it: ${error.message ?? error}`, "error");
   }
@@ -1229,7 +1230,7 @@ async function detectPlugins() {
   };
   [S.plugins.pipeline, S.plugins.claude] = await Promise.all([
     has("pipeline", "propose"),
-    has("claude", "thread_start"),
+    has("threads", "thread_start"),
   ]);
   schedule();
 }
@@ -1241,7 +1242,7 @@ async function editSummary(node, write = false) {
   const old = graph.summary(node)?.data.text ?? "";
   const text = await modal((done) => {
     const area = h("textarea.layr-textarea", { rows: 6, value: old, placeholder: "A short version of what is inside" });
-    /** Claude (haiku, through the claude plugin) writes it from the node's children; the user can still edit it. */
+    /** Claude (haiku, through the threads plugin) writes it from the node's children; the user can still edit it. */
     const writeIt = async () => {
       button.disabled = true;
       button.textContent = "Writing…";

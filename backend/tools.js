@@ -60,7 +60,7 @@ const INSTRUCTIONS = [
   "- To check your work: concepts__edges lists a group's edges, concepts__check looks for what might be wrong in it, " +
     "concepts__follow follows edges of a type step by step, and concepts__history without a node shows the latest " +
     "changes across the map.",
-  "- The nodes you change are linked to your thread, so the user can find it from the nodes: a Claude thread of " +
+  "- The nodes you change are linked to your thread, so the user can find it from the nodes: a thread of " +
     "layr is known by itself; in a layr pipeline task, pass `thread` (the task link its first message gives) to " +
     "every tool that changes the map (elsewhere, your thread's id when you know it). When your " +
     "thread has something worth finding about a node it doesn't change (you read it, decided or learned something " +
@@ -275,7 +275,7 @@ const placeArgs = {
 const THREAD_ARG = {
   type: "string",
   description:
-    "In a layr pipeline task, the task link its first message gives (a Claude thread of layr is known without it; " +
+    "In a layr pipeline task, the task link its first message gives (a thread of layr's Threads is known without it; " +
     "elsewhere, your thread's id when you know it), so the user finds your thread from the nodes",
 };
 /** Registers the tools and commands on `ctx` (backend/context.js: what layr_code's plugin host gave). */
@@ -1090,7 +1090,7 @@ export function activate(ctx) {
     },
     handler: async ({ node, nodes, note, thread }, call) => {
       const who = await links.actor(call, thread);
-      if (!who) throw new Error("Give `thread`: your Claude thread's id, or your pipeline task's link");
+      if (!who) throw new Error("Give `thread`: your thread's id, or your pipeline task's link");
       const names = [...(node ? [node] : []), ...(nodes ?? [])];
       if (!names.length) throw new Error("Give `node` or `nodes`");
       if (names.length > 100) throw new Error("At most 100 nodes at once");
@@ -1104,14 +1104,14 @@ export function activate(ctx) {
   ctx.mcp.registerTool({
     name: "threads",
     description:
-      "The threads (Claude threads, T3 threads and AI chats of the old layr, pipeline tasks and proposals) that changed, mentioned or were linked to " +
+      "The threads (Threads' threads, T3 threads and AI chats of the old layr, pipeline tasks and proposals) that changed, mentioned or were linked to " +
       "a node, latest first, with their notes and links: earlier work, discussions and planned work about it. " +
       "Without `node`, the nodes a thread changed, mentioned or was linked to (`thread`: yours, or another's).",
     inputSchema: {
       type: "object",
       properties: {
         node: nodeArg("Node id"),
-        thread: { type: "string", description: "A Claude thread's id, or a layr link (a pipeline task's)" },
+        thread: { type: "string", description: "A thread's id, or a layr link (a pipeline task's)" },
       },
     },
     handler: async ({ node, thread }, call) => {

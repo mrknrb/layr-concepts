@@ -71,7 +71,7 @@ export function buildTools({ hub, supabase, onWrite = () => {} }) {
     if (!handler) continue;
     all.set(def.tool, { name: def.tool, description: def.description, inputSchema: def.inputSchema, handler });
   }
-  /** `meta`: the request's `_meta`; the Claude thread that called is in it (callerThread). */
+  /** `meta`: the request's `_meta`; the thread that called is in it (callerThread). */
   const call = async (name, args = {}, meta = undefined) => {
     const tool = all.get(name);
     if (!tool) throw new Error(`No tool ${name}`);
