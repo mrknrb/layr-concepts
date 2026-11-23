@@ -186,7 +186,7 @@ describe("a node's context menu", () => {
       "Link a pipeline task…",
       "Unlink…",
       "-",
-      "Ask in a Claude thread…",
+      "Ask in a thread…",
       "Make an idea from this",
     ]);
     for (const item of links.items) if (item !== "-") item.run();

@@ -1,6 +1,7 @@
 // The threads that changed, mentioned or were linked to a node (layr_code migrations 0014, 0015): who a tool call acts
-// for, and recording it on nodes. An agent names its thread itself (`thread`): in the new layr a Claude thread's id
-// (the claude plugin's threads, `layr://claude/thread/<id>`); from layr_code a T3 thread's id or link, or a pipeline
+// for, and recording it on nodes. An agent names its thread itself (`thread`): in the new layr a thread's id (the
+// threads plugin's, `layr://threads/thread/<id>`; `layr://claude/thread/<id>` from before it was renamed is read as
+// it, and its rows move with it); from layr_code a T3 thread's id or link, or a pipeline
 // task's link. The hub is shared by every thread and can't tell them apart. A thread the pipeline holds is kept as its
 // task, from proposal to landing. The rows are shared with layr_code, so its links (T3 threads, chats) still read.
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -13,22 +14,33 @@ export const touch = (nodes) => {
 /** Who the running tool call acts for, if anyone: proposals keep it, so accepting one is still that thread's change. */
 export const currentActor = () => calls.getStore()?.actor;
 const T3_THREAD = "layr://t3threads/thread/";
-const CLAUDE_THREAD = "layr://claude/thread/";
+const CLAUDE_THREAD = "layr://threads/thread/";
+/** The threads plugin's thread links from when it was the plugin `claude` (rows made then keep them). */
+const OLD_THREAD = "layr://claude/thread/";
+/** The keys a thread's rows can have: a threads plugin's thread has its old key too. */
+const keysOf = (key) => (key?.startsWith(CLAUDE_THREAD) ? [key, OLD_THREAD + key.slice(CLAUDE_THREAD.length)] : [key]);
 const TASK = "layr://pipeline/task/";
 const KEEP_MS = 10 * 60_000;
 /** A pipeline task's title as its links show it. */
 export const taskTitle = (number, title) => `#${number}${title ? ` ${title}` : ""}`;
 export function threads(ctx) {
   const known = new Map();
-  /** Move the rows of `thread` to `to` (or only retitle them, `to.thread` being the same), or delete them (null). */
-  const relink = (thread, to) => {
+  /**
+   * Move the rows of `thread` to `to` (or only retitle them, `to.thread` being the same), or delete them (null). A
+   * threads plugin's thread: its rows under the old `layr://claude/thread/` key too (retitled in place).
+   */
+  const relink = async (thread, to) => {
     for (const key of [thread, to?.thread]) if (key) known.delete(key);
-    return ctx.tables.rpc("relink", {
-      thread_key: thread,
-      new_key: to?.thread ?? null,
-      new_href: to ? (to.href ?? to.thread) : null,
-      new_title: to?.title ?? null,
-    });
+    let result;
+    for (const key of keysOf(thread)) {
+      result = await ctx.tables.rpc("relink", {
+        thread_key: key,
+        new_key: to ? (key === thread || to.thread !== thread ? to.thread : key) : null,
+        new_href: to ? (to.href ?? to.thread) : null,
+        new_title: to?.title ?? null,
+      });
+    }
+    return result;
   };
   /**
    * A T3 thread's title, or its pipeline task when the pipeline holds it: then the rows it made as a T3 thread (before
@@ -64,7 +76,7 @@ export function threads(ctx) {
     await relink(thread, actor).catch((error) => ctx.log(`could not move the links of ${thread}:`, String(error)));
     return actor;
   }
-  /** A Claude thread of the claude plugin, with its title; refused when the claude plugin says there is no such thread. */
+  /** A thread of the threads plugin, with its title. */
   async function claudeThread(id) {
     const thread = CLAUDE_THREAD + encodeURIComponent(id);
     const title = ctx.claude ? await ctx.claude.threadTitle(id) : null;
@@ -87,7 +99,7 @@ export function threads(ctx) {
   }
   /**
    * Who a tool call acts for: the run's caller (an AI chat), else the thread the agent named (a T3 thread's id or
-   * `layr://t3threads/thread/…` link, or a pipeline task's `layr://pipeline/task/…` link), else the Claude thread
+   * `layr://t3threads/thread/…` link, or a pipeline task's `layr://pipeline/task/…` link), else the thread
    * that called (`call.thread`, from the hub's `_meta`: callerThread). None when none says.
    */
   async function actor(call, thread) {
@@ -99,8 +111,8 @@ export function threads(ctx) {
     if (cached && Date.now() - cached.at < KEEP_MS) return cached.actor;
     const found = key.startsWith("layr://chat/chat/")
       ? await chat(key)
-      : key.startsWith(CLAUDE_THREAD)
-        ? await claudeThread(decodeURIComponent(key.slice(CLAUDE_THREAD.length)))
+      : key.startsWith(CLAUDE_THREAD) || key.startsWith(OLD_THREAD)
+        ? await claudeThread(decodeURIComponent(key.slice(key.indexOf("/thread/") + "/thread/".length)))
         : key.startsWith(T3_THREAD)
           ? await t3Thread(decodeURIComponent(key.slice(T3_THREAD.length)))
           : key.startsWith(TASK)
@@ -137,12 +149,13 @@ export function threads(ctx) {
   return { actor, mark, relink, runAs };
 }
 /**
- * The Claude thread that called a tool, as its link, from the MCP request's `_meta["layr/caller"]` (docs/ARCHITECTURE.md
- * › The MCP hub): the claude plugin gives each thread an agent token labelled with the thread's id. Else undefined.
+ * The thread that called a tool, as its link, from the MCP request's `_meta["layr/caller"]` (docs/ARCHITECTURE.md
+ * › The MCP hub): the threads plugin gives each thread an agent token labelled with the thread's id (its caller is
+ * `claude` while a home hasn't moved it to its new id yet). Else undefined.
  */
 export function callerThread(meta) {
   const caller = meta?.["layr/caller"];
-  if (caller?.kind !== "agent" || caller.plugin !== "claude") return undefined;
+  if (caller?.kind !== "agent" || !["threads", "claude"].includes(caller.plugin)) return undefined;
   const id = String(caller.label ?? "").trim();
   return /^t_[A-Za-z0-9_-]+$/.test(id) ? CLAUDE_THREAD + encodeURIComponent(id) : undefined;
 }

@@ -39,7 +39,7 @@ const events = [];
 const hub = {
   async call(name, args) {
     if (name === "layr__data_get") return store.get(args.key) ?? null;
-    if (name === "claude__thread_status") throw new Error("not allowed to call claude's tools");
+    if (name === "threads__thread_status") throw new Error("not allowed to call threads' tools");
     throw new Error(`fake hub: no ${name}`);
   },
   emit: (topic, data) => events.push({ topic, data }),

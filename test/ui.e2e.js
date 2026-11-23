@@ -170,8 +170,8 @@ const seed = {
     },
     pipeline__projects: { projects: [{ projectId: "pr1", title: "layr", enabled: true }] },
     pipeline__tasks: { tasks: [{ number: 12, title: "Fix the griddle", column: "ready" }], more: 0 },
-    claude__thread_start: { thread: { id: "t_abc", title: "Soup" } },
-    claude__projects_list: { projects: [{ id: "c1", name: "layr" }] },
+    threads__thread_start: { thread: { id: "t_abc", title: "Soup" } },
+    threads__projects_list: { projects: [{ id: "c1", name: "layr" }] },
   },
 };
 
@@ -426,15 +426,15 @@ try {
     assert.match(propose.args.description, /Soup/);
   });
 
-  await step("ask in a Claude thread: started with the node as context, and linked", async () => {
+  await step("ask in a thread: started with the node as context, and linked", async () => {
     await page.click(".selection-bar button[title^='Clear']").catch(() => {});
     await page.click(".item-head[data-node='bread'] .node-text", { button: "right" });
-    await menuPath(page, ["Links", "Ask in a Claude thread…"]);
+    await menuPath(page, ["Links", "Ask in a thread…"]);
     await page.waitForSelector(".modal:has-text('Ask Claude about')");
     await page.screenshot({ path: join(SHOTS, "ask-claude-dark.png") });
     await page.click(".modal button:has-text('Start the thread')");
     await until(
-      async () => (await tables(page)).threads.some((t) => t.href === "layr://claude/thread/t_abc"),
+      async () => (await tables(page)).threads.some((t) => t.href === "layr://threads/thread/t_abc"),
       "linked",
     );
     const start = (await page.evaluate(() => window.__layr.calls)).find((c) => c.tool === "thread_start");
